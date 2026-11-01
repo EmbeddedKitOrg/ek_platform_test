@@ -20,6 +20,6 @@ monitor:
     probe-rs reset --chip GD32F470ZG
     tio -b 115200 /dev/ttyACM0 
 format:
-    fd -e c -e h -E ek_platform/third_party . Bsp Core Driver Test ek_platform -x clang-format -i
+    fd -e c -e h . src include lib -x clang-format -i
     
 run:build flash monitor
