@@ -57,6 +57,6 @@
 #define EKCFG_LOG_BUF_SIZE       (128)
 #define EKCFG_ASSERT_TINY        (1)
 #define EKCFG_ASSERT_LOG         (1)
-#define EKCFG_VFS_TREE_DUMP_UTF8 (1) 
+#define EKCFG_VFS_TREE_DUMP_UTF8 (1)
 
 #endif /* EK_CONF_H */
