@@ -49,6 +49,7 @@
  * 模块子配置 — 根据实际硬件调整
  * ======================================================================== */
 
+#define EKCFG_ARCH_IRQ_COUNT     (91)
 #define EKCFG_HEAP_TLSF          (1)
 #define EKCFG_HEAP_SIZE          (64 * 1024)
 #define EKCFG_HEAP_SECTION       ".tcmram"
