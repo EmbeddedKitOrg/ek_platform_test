@@ -20,7 +20,7 @@ void system_init(void)
     systick_init();
 }
 
-EK_EXPORT_EARLIEST(system_init, 0);
+EK_EXPORT_BOOT(system_init, EK_EXPORT_ORDER_BOOT_SYSTEM);
 
 int main(void)
 {

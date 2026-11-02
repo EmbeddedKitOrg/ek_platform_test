@@ -35,7 +35,7 @@ void bsp_uart_init(void)
     usart_enable(BSP_UART); // 使能串口
 }
 
-EK_EXPORT_HARDWARE(bsp_uart_init, 1);
+EK_EXPORT_BOARD(bsp_uart_init, EK_EXPORT_ORDER_BOARD_UART);
 
 int bsp_uart_send_data(uint8_t ch)
 {
