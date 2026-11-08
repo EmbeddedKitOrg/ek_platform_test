@@ -39,4 +39,5 @@ target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
     -fdiagnostics-color=always
     -Wall
     -Wextra
+    -g
 )

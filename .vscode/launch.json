@@ -20,7 +20,7 @@
             "coreConfigs": [
                 {
                     "coreIndex": 0,
-                    "programBinary": "./build/ek_utils_test.elf"
+                    "programBinary": "./build/main.elf"
                 }
             ]
         },
