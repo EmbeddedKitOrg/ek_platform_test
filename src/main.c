@@ -8,19 +8,10 @@
 #include "ek/core/ek_export.h"
 #include "ek/core/ek_log.h"
 #include "ek/sched/ek_picothread.h"
+#include "ek/vfs/ek_vfs_core.h"
 
 static void _restore_clock_to_240m(void);
-
-EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_INFO);
-
-void system_init(void)
-{
-    rcu_periph_clock_enable(RCU_PMU);
-    nvic_priority_group_set(NVIC_PRIGROUP_PRE0_SUB4);
-    systick_init();
-}
-
-EK_EXPORT_BOOT(system_init, EK_EXPORT_ORDER_BOOT_SYSTEM);
+static void _uart_test(void);
 
 int main(void)
 {
@@ -33,54 +24,53 @@ int main(void)
     // str_view_test();
     // vec_test();
     vfs_test();
+    _uart_test();
 
     while (1)
     {
-        uint32_t now_tick = get_tick();
-        uint32_t next_tick = ek_pt_schedule(now_tick);
-        uint32_t diff_tick = next_tick - now_tick;
-
-        if (!next_tick)
-        {
-            // 没有任何任务了
-            // 可以深度睡眠
-            SysTick->CTRL = 0;
-            EK_LOG_WARN("goto deep sleep");
-            // pmu_to_deepsleepmode(PMU_LDO_LOWPOWER, PMU_LOWDRIVER_ENABLE, WFI_CMD);
-            // _restore_clock_to_240m();
-            pmu_to_sleepmode(WFI_CMD);
-            SysTick->CTRL = 1;
-            EK_LOG_INFO("wake up from deepsleep");
-        }
-
-        if (!diff_tick)
-        {
-            // 还有任务没触发
-            // 需要继续运行 ek_pt_schedule()
-            continue;
-        }
-        else if (diff_tick)
-        {
-            // 设定时器，睡到下次唤醒
-            bsp_schedule_timer_set_once(diff_tick);
-            tick_inc(diff_tick);
-
-            SysTick->CTRL = 0;
-            pmu_to_sleepmode(WFI_CMD);
-            SysTick->CTRL = 1;
-        }
     }
+}
+
+static void _uart_test(void)
+{
+    char tree[512];
+    uint8_t ch;
+    ssize_t n;
+    int fd;
+
+    ek_vfs_tree_dump(tree, sizeof(tree));
+    printf("%s", tree);
+
+    fd = ek_vfs_open("/dev/uart0", O_RDWR | O_NONBLOCK);
+    if (fd < 0)
+    {
+        printf("nonblock open: %s\r\n", strerror(-fd));
+        return;
+    }
+    n = ek_vfs_read(fd, &ch, 1);
+    printf("nonblock read: %d %s\r\n", (int)n, n < 0 ? strerror(-n) : "ok");
+    n = ek_vfs_write(fd, "nonblock\r\n", sizeof("nonblock\r\n") - 1);
+    printf("nonblock write: %d\r\n", (int)n);
+    ek_vfs_close(fd);
+
+    fd = ek_vfs_open("/dev/uart0", O_RDWR);
+    if (fd < 0)
+    {
+        printf("blocking open: %s\r\n", strerror(-fd));
+        return;
+    }
+    n = ek_vfs_write(fd, "blocking\r\n", sizeof("blocking\r\n") - 1);
+    printf("blocking write done: %d\r\n", (int)n);
+    n = ek_vfs_read(fd, &ch, 1);
+    printf("blocking read: %d 0x%02X\r\n", (int)n, ch);
+    ek_vfs_write(fd, &ch, 1);
+    ek_vfs_close(fd);
 }
 
 int ek_port_io_fputc(int ch)
 {
     bsp_uart_send_data(ch);
     return ch;
-}
-
-uint32_t ek_port_log_get_tick(void)
-{
-    return get_tick();
 }
 
 static void _restore_clock_to_240m(void)

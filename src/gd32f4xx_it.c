@@ -1,6 +1,5 @@
 #include "gd32f4xx_it.h"
 #include "main.h"
-#include "systick.h"
 #include "bsp_timer.h"
 
 /*!
@@ -81,7 +80,6 @@ void DebugMon_Handler(void)
 
 void SysTick_Handler(void)
 {
-    tick_inc(1);
 }
 
 void TIMER6_IRQHandler(void)

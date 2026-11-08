@@ -22,7 +22,7 @@ void bsp_schedule_timer_init(void)
     nvic_irq_enable(BSP_SCHEDULE_TIMER_IRQ, 0, 1);
 }
 
-EK_EXPORT_BOARD(bsp_schedule_timer_init, EK_EXPORT_ORDER_BOARD_TIMER);
+EK_EXPORT_BOARD(bsp_schedule_timer_init, EXPORT_ORDER_BOARD_TIMER);
 
 void bsp_schedule_timer_set_once(uint16_t tick)
 {
