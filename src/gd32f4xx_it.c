@@ -1,6 +1,7 @@
 #include "gd32f4xx_it.h"
 #include "main.h"
 #include "bsp_timer.h"
+#include "ek/core/ek_arch.h"
 
 /*!
     \brief    this function handles NMI exception
@@ -86,3 +87,6 @@ void TIMER6_IRQHandler(void)
 {
     bsp_schedule_timer_irq_handler();
 }
+
+// BOOT 阶段写入 SRAM 向量表，早于 bsp_schedule_timer_init 的 nvic_irq_enable
+EK_DEFINE_ARCH_IRQ(BSP_SCHEDULE_TIMER_IRQ, TIMER6_IRQHandler);

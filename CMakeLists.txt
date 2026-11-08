@@ -21,11 +21,10 @@ set(INC_DIRS
 )
 
 # 收集源文件
-file(GLOB START ${CMAKE_CURRENT_SOURCE_DIR}/startup/*.s)
 file(GLOB_RECURSE SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 
 # 创建可执行文件目标
-add_executable(${CMAKE_PROJECT_NAME} ${SRCS} ${START})
+add_executable(${CMAKE_PROJECT_NAME} ${SRCS})
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${INC_DIRS}
