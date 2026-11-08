@@ -24,47 +24,11 @@ int main(void)
     str_view_test();
     vec_test();
     vfs_test();
-    // _uart_test();
+    _uart_test();
 
     while (1)
     {
     }
-}
-
-static void _uart_test(void)
-{
-    char tree[512];
-    uint8_t ch;
-    ssize_t n;
-    int fd;
-
-    ek_vfs_tree_dump(tree, sizeof(tree));
-    printf("%s", tree);
-
-    fd = ek_vfs_open("/dev/uart0", O_RDWR | O_NONBLOCK);
-    if (fd < 0)
-    {
-        printf("nonblock open: %s\r\n", strerror(-fd));
-        return;
-    }
-    n = ek_vfs_read(fd, &ch, 1);
-    printf("nonblock read: %d %s\r\n", (int)n, n < 0 ? strerror(-n) : "ok");
-    n = ek_vfs_write(fd, "nonblock\r\n", sizeof("nonblock\r\n") - 1);
-    printf("nonblock write: %d\r\n", (int)n);
-    ek_vfs_close(fd);
-
-    fd = ek_vfs_open("/dev/uart0", O_RDWR);
-    if (fd < 0)
-    {
-        printf("blocking open: %s\r\n", strerror(-fd));
-        return;
-    }
-    n = ek_vfs_write(fd, "blocking\r\n", sizeof("blocking\r\n") - 1);
-    printf("blocking write done: %d\r\n", (int)n);
-    n = ek_vfs_read(fd, &ch, 1);
-    printf("blocking read: %d 0x%02X\r\n", (int)n, ch);
-    ek_vfs_write(fd, &ch, 1);
-    ek_vfs_close(fd);
 }
 
 int ek_port_io_fputc(int ch)

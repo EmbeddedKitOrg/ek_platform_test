@@ -83,10 +83,4 @@ void SysTick_Handler(void)
 {
 }
 
-void TIMER6_IRQHandler(void)
-{
-    bsp_schedule_timer_irq_handler();
-}
 
-// BOOT 阶段写入 SRAM 向量表，早于 bsp_schedule_timer_init 的 nvic_irq_enable
-EK_DEFINE_ARCH_IRQ(BSP_SCHEDULE_TIMER_IRQ, TIMER6_IRQHandler);
