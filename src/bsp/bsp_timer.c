@@ -1,8 +1,9 @@
 #include "bsp_timer.h"
 #include "ek/core/ek_export.h"
+#include "ek/core/ek_arch.h"
 #include "ek/core/ek_log.h"
 
-EK_LOG_FILE_TAG("bsp_timer.c");
+EK_LOG_FILE_TAG(__FILE_NAME__);
 
 void bsp_schedule_timer_init(void)
 {
@@ -20,6 +21,7 @@ void bsp_schedule_timer_init(void)
     timer_interrupt_flag_clear(BSP_SCHEDULE_TIMER, TIMER_INT_FLAG_UP);
     timer_interrupt_enable(BSP_SCHEDULE_TIMER, TIMER_INT_UP);
     nvic_irq_enable(BSP_SCHEDULE_TIMER_IRQ, 0, 1);
+    bsp_schedule_timer_set_once(100);
 }
 
 EK_EXPORT_BOARD(bsp_schedule_timer_init, EXPORT_ORDER_BOARD_TIMER);
@@ -39,5 +41,8 @@ void bsp_schedule_timer_irq_handler(void)
     if (timer_interrupt_flag_get(BSP_SCHEDULE_TIMER, TIMER_INT_FLAG_UP))
     {
         timer_interrupt_flag_clear(BSP_SCHEDULE_TIMER, TIMER_INT_FLAG_UP);
+        EK_LOG_INFO("timer irq evoke");
     }
 }
+
+EK_DEFINE_ARCH_IRQ(BSP_SCHEDULE_TIMER_IRQ, bsp_schedule_timer_irq_handler);

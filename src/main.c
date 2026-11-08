@@ -11,20 +11,18 @@
 #include "ek/vfs/ek_vfs_core.h"
 
 static void _restore_clock_to_240m(void);
-static void _uart_test(void);
 
 int main(void)
 {
-    evoke_test();
-    picothread_test_init();
-    ringbuf_test();
-    stack_test();
-    snapshot_test();
-    str_test();
-    str_view_test();
-    vec_test();
-    vfs_test();
-    _uart_test();
+    // evoke_test();
+    // picothread_test_init();
+    // ringbuf_test();
+    // stack_test();
+    // snapshot_test();
+    // str_test();
+    // str_view_test();
+    // vec_test();
+    // vfs_test();
 
     while (1)
     {
