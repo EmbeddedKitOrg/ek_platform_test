@@ -8,11 +8,6 @@ project(main LANGUAGES C CXX ASM)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ek_platform 子模块
-ek_platform_configure(
-    CONF "${CMAKE_CURRENT_SOURCE_DIR}/include/ek_conf.h"
-    BOARD "${CMAKE_CURRENT_SOURCE_DIR}/include/ek_board.h")
-add_subdirectory(lib/ek_platform)
 add_subdirectory(lib/gd32f4xx_driver)
 
 set(INC_DIRS
@@ -25,6 +20,15 @@ file(GLOB_RECURSE SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 
 # 创建可执行文件目标
 add_executable(${CMAKE_PROJECT_NAME} ${SRCS})
+
+# ek_platform 子模块
+ek_platform_configure(
+    CONF "${CMAKE_CURRENT_SOURCE_DIR}/include/ek_conf.h"
+    BOARD "${CMAKE_CURRENT_SOURCE_DIR}/include/ek_board.h"
+    SOC "${CMAKE_CURRENT_SOURCE_DIR}/include/ek_soc.h"
+    SOC_TARGET gd32f4xx_driver
+)
+add_subdirectory(lib/ek_platform)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${INC_DIRS}
