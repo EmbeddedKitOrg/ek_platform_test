@@ -1,0 +1,28 @@
+# GD32F470ZGT6 Renode 仿真启动脚本（纯终端模式）
+#
+# 运行:
+#   just sim-term
+#   或: renode --plain --disable-gui -P -1 --hide-log scripts/renode/run_term.resc
+#
+# 效果:
+#   - 不弹任何窗口
+#   - UART0 每行输出直接打印到当前终端
+#   - 该模式只读，无法输入；需要交互请用 GUI 模式或 sim-debug
+
+using sysbus
+
+mach create "gd32f470zgt6"
+
+machine LoadPlatformDescription @scripts/renode/gd32f470zgt6.repl
+
+$bin?=@build/main.elf
+sysbus LoadELF $bin
+
+# 固件发 "\r\n"，hook 会在 \r 和 \n 各触发一次，strip 过滤空行；
+# UART 字节被 Renode 按 latin-1 转成字符串，需还原后再按 UTF-8 解码。
+usart0 AddLineHook "" "if line.strip(): print(line.encode('latin-1').decode('utf-8','replace'))"
+
+# 屏蔽 Renode 自身日志
+logLevel 3
+
+start
