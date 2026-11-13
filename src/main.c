@@ -23,6 +23,7 @@ int main(void)
     // str_view_test();
     // vec_test();
     // vfs_test();
+    shell_test();
 
     while (1)
     {

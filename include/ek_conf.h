@@ -59,5 +59,9 @@
 #define EKCFG_ASSERT_TINY        (1)
 #define EKCFG_ASSERT_LOG         (1)
 #define EKCFG_VFS_TREE_DUMP_UTF8 (1)
+#define EKCFG_SHELL              (1)
+#define EKCFG_SHELL_BUF_SIZE     (256)
+#define EKCFG_SHELL_PROMPT       "gd32f470>"
+#define EKCFG_SHELL_UTF8         (0)
 
 #endif /* EK_CONF_H */
