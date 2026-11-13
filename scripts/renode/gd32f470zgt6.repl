@@ -1,0 +1,43 @@
+// GD32F470ZGT6 (ARM Cortex-M4F, 240MHz) 平台描述
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4f"
+    nvic: nvic
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 240000000
+    IRQ -> cpu@0
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x00100000 // 1MB FLASH
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x00070000 // 448KB 主 SRAM
+
+tcmram: Memory.MappedMemory @ sysbus 0x10000000
+    size: 0x00010000 // 64KB TCMRAM (ek_heap 所在区域)
+
+usart0: UART.STM32_UART @ sysbus <0x40011000, +0x100>
+    -> nvic@37
+
+sysbus:
+    init:
+        // RCU：预置 HXTAL/PLL 稳定标志，并让 CFG0.SCS 显示 PLLP 已选中，
+        // 避免 system_gd32f4xx.c 中等待时钟稳定的 while 循环卡死
+        Tag <0x40023800 0x4> "RCU_CTL"  0x03030000
+        Tag <0x40023804 0x4> "RCU_PLL"  0x0A407819
+        Tag <0x40023808 0x4> "RCU_CFG0" 0x03030008
+        Tag <0x4002380C 0x4> "RCU_INT"  0x00000000
+        Tag <0x40023830 0x4> "RCU_AHB1EN" 0xFFFFFFFF
+        Tag <0x40023834 0x4> "RCU_AHB2EN" 0xFFFFFFFF
+        Tag <0x40023838 0x4> "RCU_AHB3EN" 0xFFFFFFFF
+        Tag <0x40023840 0x4> "RCU_APB1EN" 0xFFFFFFFF
+        Tag <0x40023844 0x4> "RCU_APB2EN" 0xFFFFFFFF
+
+        // PMU：PMU_CS 预置 HDRF(bit16)/HDSRF(bit17)，避免高驱动等待死循环
+        Tag <0x40007000 0x4> "PMU_CTL" 0x00000001
+        Tag <0x40007004 0x4> "PMU_CS"  0x00030001
+
+        // GPIOA..I 占位，避免外设配置时报未映射警告
+        Tag <0x40020000 0x2400> "GPIO" 0x00000000

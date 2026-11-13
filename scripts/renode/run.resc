@@ -1,0 +1,34 @@
+# GD32F470ZGT6 Renode 仿真启动脚本
+#
+# 运行:
+#   just sim
+#   或: renode --plain --disable-gui -P -1 --hide-log scripts/renode/run.resc
+#   指定固件: renode --plain --disable-gui -P -1 --hide-log scripts/renode/run.resc bin=@path/to/app.elf
+#
+# 默认直接加载 build/main.elf，终端只显示 UART0 输出，不打印 Renode 自身日志。
+# 需要 GDB 时取消下面 StartGdbServer 的注释。
+# 需要向 Shell 发命令时去掉 -P -1，用 nc localhost 1234 + usart0 WriteLine "help"。
+
+using sysbus
+
+mach create "gd32f470zgt6"
+
+machine LoadPlatformDescription @scripts/renode/gd32f470zgt6.repl
+
+# 直接加载 ELF（默认 build/main.elf）
+$bin?=@build/main.elf
+sysbus LoadELF $bin
+
+# UART0 每行输出直接打印到当前终端
+# 1) 固件发 "\r\n"，hook 在 \r 和 \n 各触发一次，strip() 过滤掉空行。
+# 2) Renode 把 UART 字节按 latin-1 变成字符串，直接 print 会把 UTF-8 二次编码，
+#    所以先 encode 回原始字节，再按 UTF-8 解码，中文/制表符才能正常显示。
+usart0 AddLineHook "" "if line.strip(): print(line.encode('latin-1').decode('utf-8','replace'))"
+
+# 屏蔽 Renode 自身的 Info/Warning 噪声，只保留 Error
+logLevel 3
+
+# 需要单步调试时启用
+# machine StartGdbServer 3333
+
+start
