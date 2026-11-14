@@ -62,6 +62,7 @@
 #define EKCFG_SHELL              (1)
 #define EKCFG_SHELL_BUF_SIZE     (256)
 #define EKCFG_SHELL_PROMPT       "gd32f470>"
-#define EKCFG_SHELL_UTF8         (0)
+#define EKCFG_SHELL_UTF8         (1)
+#define EKCFG_SHELL_BUILTIN_CMDS (1)
 
 #endif /* EK_CONF_H */

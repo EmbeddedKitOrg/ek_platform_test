@@ -3,7 +3,7 @@
 #include "ek/core/ek_arch.h"
 #include "ek/core/ek_log.h"
 
-EK_LOG_FILE_TAG(__FILE_NAME__);
+EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_WARN);
 
 void bsp_schedule_timer_init(void)
 {
