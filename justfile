@@ -20,6 +20,7 @@ flash:build
     probe-rs reset --chip GD32F470ZG
         
 monitor:
+    clear
     probe-rs reset --chip GD32F470ZG
     tio -b 115200 /dev/ttyACM0 
 
