@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/lib/ek_platform/cmake/ek_platform.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/lib/ek_platform/cmake/platform.cmake)
 ek_platform_prepare(ARCH cm4 PICOLIBC ON)
 set(PICOLIBC_FETCH ON)
 

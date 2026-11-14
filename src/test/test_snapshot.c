@@ -1,5 +1,5 @@
 #include "test.h"
-#include "ek/container/ek_snapshot.h"
+#include "ek/container/snapshot.h"
 
 EK_LOG_FILE_TAG("test_snapshot.c");
 

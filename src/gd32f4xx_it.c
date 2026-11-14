@@ -1,7 +1,7 @@
 #include "gd32f4xx_it.h"
 #include "main.h"
 #include "bsp_timer.h"
-#include "ek/core/ek_arch.h"
+#include "ek/core/arch.h"
 
 /*!
     \brief    this function handles NMI exception

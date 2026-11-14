@@ -1,5 +1,5 @@
 #include "test.h"
-#include "ek/container/ek_vec.h"
+#include "ek/container/vec.h"
 
 EK_LOG_FILE_TAG("test_vec.c");
 

@@ -1,5 +1,5 @@
 #include "test.h"
-#include "ek/container/ek_str_view.h"
+#include "ek/container/str_view.h"
 
 EK_LOG_FILE_TAG("test_str_view.c");
 

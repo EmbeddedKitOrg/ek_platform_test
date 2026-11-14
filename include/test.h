@@ -3,9 +3,9 @@
 
 #include "main.h"
 
-#include "ek_log.h"
-#include "ek_heap.h"
-#include "ek_export.h"
+#include "ek/core/log.h"
+#include "ek/mem/heap.h"
+#include "ek/core/export.h"
 
 #define TEST_FAIL(msg)             \
     do                             \

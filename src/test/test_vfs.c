@@ -1,8 +1,8 @@
 #include "test.h"
-#include "ek/vfs/ek_vfs_core.h"
-#include "ek/vfs/ek_vfs_bus.h"
-#include "ek/mem/ek_static_alloc.h"
-#include "ek/core/ek_log.h"
+#include "ek/vfs/vfs_core.h"
+#include "ek/vfs/vfs_bus.h"
+#include "ek/mem/static_alloc.h"
+#include "ek/core/log.h"
 
 EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_NONE);
 

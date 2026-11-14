@@ -1,5 +1,5 @@
 #include "test.h"
-#include "ek/sched/ek_evoke.h"
+#include "ek/sched/evoke.h"
 
 EK_LOG_FILE_TAG("test_evoke.c");
 

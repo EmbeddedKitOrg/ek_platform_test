@@ -1,5 +1,5 @@
 #include "test.h"
-#include "ek/container/ek_ringbuf.h"
+#include "ek/container/ringbuf.h"
 
 EK_LOG_FILE_TAG("test_ringbuf.c");
 

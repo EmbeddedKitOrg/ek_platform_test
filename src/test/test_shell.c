@@ -1,6 +1,6 @@
 #include "test.h"
-#include "ek/shell/ek_shell.h"
-#include "ek/vfs/ek_vfs_core.h"
+#include "ek/shell/shell.h"
+#include "ek/vfs/vfs_core.h"
 
 // 暂时屏蔽本模块日志，避免干扰 Shell 交互输出
 EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_MAX);

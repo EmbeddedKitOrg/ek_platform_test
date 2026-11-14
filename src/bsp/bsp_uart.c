@@ -1,10 +1,10 @@
 #include "bsp_uart.h"
-#include "ek/core/ek_export.h"
-#include "ek/core/ek_log.h"
-#include "ek/container/ek_ringbuf.h"
-#include "ek/core/ek_arch.h"
-#include "ek/mem/ek_static_alloc.h"
-#include "ek/vfs/ek_vfs_core.h"
+#include "ek/core/export.h"
+#include "ek/core/log.h"
+#include "ek/container/ringbuf.h"
+#include "ek/core/arch.h"
+#include "ek/mem/static_alloc.h"
+#include "ek/vfs/vfs_core.h"
 
 void bsp_uart_init(void)
 {

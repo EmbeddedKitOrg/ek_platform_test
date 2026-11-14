@@ -1,5 +1,5 @@
 #include "bsp_led.h"
-#include "ek/core/ek_export.h"
+#include "ek/core/export.h"
 
 void bsp_led_init(void)
 {

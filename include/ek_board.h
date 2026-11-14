@@ -2,7 +2,7 @@
  * @file ek_board.h
  * @brief 板级内存布局（GD32F470ZG）
  *
- * 由 ek_platform/cmake/ek_linker.cmake 读取，用于生成链接脚本。
+ * 由 ek_platform/cmake/linker.cmake 读取，用于生成链接脚本。
  * 功能开关在 ek_conf.h，本文件不参与组件裁剪。
  */
 

@@ -1,5 +1,5 @@
 #include "gd32f4xx_rcu.h"
-#include "ek/core/ek_export.h"
+#include "ek/core/export.h"
 
 void system_init(void)
 {

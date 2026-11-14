@@ -5,10 +5,10 @@
 #include "bsp_led.h"
 #include "bsp_timer.h"
 
-#include "ek/core/ek_export.h"
-#include "ek/core/ek_log.h"
-#include "ek/sched/ek_picothread.h"
-#include "ek/vfs/ek_vfs_core.h"
+#include "ek/core/export.h"
+#include "ek/core/log.h"
+#include "ek/sched/picothread.h"
+#include "ek/vfs/vfs_core.h"
 
 static void _restore_clock_to_240m(void);
 

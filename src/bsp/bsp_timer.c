@@ -1,7 +1,7 @@
 #include "bsp_timer.h"
-#include "ek/core/ek_export.h"
-#include "ek/core/ek_arch.h"
-#include "ek/core/ek_log.h"
+#include "ek/core/export.h"
+#include "ek/core/arch.h"
+#include "ek/core/log.h"
 
 EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_WARN);
 

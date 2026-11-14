@@ -5,7 +5,7 @@
  *   1. 将此文件复制到你的项目 include 路径中，命名为 ek_conf.h
  *   2. 确保你的 include 路径优先级高于 ek_utils/inc/
  *   3. 只保留你需要覆盖的宏，删除其余行
- *      （未定义的宏会从 ek_conf_default.h 取默认值）
+ *      （未定义的宏会从 lib/ek_platform/include/ek/conf_internal.h 取默认值）
  */
 
 #ifndef EK_CONF_H
