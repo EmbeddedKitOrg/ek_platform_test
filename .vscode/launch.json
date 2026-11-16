@@ -8,7 +8,7 @@
             "type": "probe-rs-debug",
             "request": "launch",
             "name": "probe-rs Test",
-            "cwd": "",
+            "cwd": "${workspaceFolder}",
             "connectUnderReset": false,
             "chip": "GD32F470ZG",
             "flashingConfig": {
