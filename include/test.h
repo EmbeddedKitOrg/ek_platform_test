@@ -50,5 +50,6 @@ void snapshot_test(void);
 void evoke_test(void);
 void vfs_test(void);
 void shell_test(void);
+void os_test(void);
 
 #endif // TEST_H

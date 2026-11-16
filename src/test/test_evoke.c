@@ -1,6 +1,8 @@
 #include "test.h"
 #include "ek/sched/evoke.h"
 
+#if EKCFG_RTOS == 0 && EKCFG_EVOKE == 1
+
 EK_LOG_FILE_TAG("test_evoke.c");
 
 static void _static_evoke_cb(ek_evoke_event_t *evt, void *arg)
@@ -32,3 +34,11 @@ void evoke_test(void)
 
     EK_LOG_INFO("static evoke test passed, unused heap:%u", (unsigned)ek_heap_unused());
 }
+
+#else
+
+void evoke_test(void)
+{
+}
+
+#endif

@@ -4,13 +4,17 @@
 #include "bsp_uart.h"
 #include "bsp_led.h"
 #include "bsp_timer.h"
+#include "bsp_os_timer.h"
 
 #include "ek/core/export.h"
 #include "ek/core/log.h"
+#include "ek/os/kernel.h"
 #include "ek/sched/picothread.h"
 #include "ek/vfs/vfs_core.h"
 
 static void _restore_clock_to_240m(void);
+
+EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_NONE);
 
 int main(void)
 {
@@ -23,7 +27,34 @@ int main(void)
     // str_view_test();
     // vec_test();
     // vfs_test();
-    shell_test();
+    // shell_test();
+    EK_LOG_INFO("hello");
+
+#if EKCFG_RTOS == 1
+    EK_LOG_INFO("main: entering RTOS");
+
+    {
+        extern uint32_t _sram_vtor_start[];
+        extern void ek_arch_start_first_thread(void);
+        extern void ek_arch_switch_thread(void);
+        uint32_t *vt = (uint32_t *)(uintptr_t)SCB->VTOR;
+        EK_LOG_INFO("VTOR=0x%08lx sram=0x%08lx heap=%lu",
+                    (unsigned long)SCB->VTOR,
+                    (unsigned long)(uintptr_t)_sram_vtor_start,
+                    (unsigned long)ek_heap_total_size());
+        EK_LOG_INFO("svc   vec=0x%08lx want=0x%08lx",
+                    (unsigned long)vt[11],
+                    (unsigned long)(uintptr_t)ek_arch_start_first_thread);
+        EK_LOG_INFO("pendsv vec=0x%08lx want=0x%08lx",
+                    (unsigned long)vt[14],
+                    (unsigned long)(uintptr_t)ek_arch_switch_thread);
+    }
+
+    os_test(); /* 创建自检线程，内核启动后才开始运行 */
+    EK_LOG_INFO("main: os_test done, starting kernel");
+    ek_os_kernel_start(&g_bsp_os_timer_ops);
+    EK_LOG_ERROR("main: kernel start returned unexpectedly");
+#endif
 
     while (1)
     {
