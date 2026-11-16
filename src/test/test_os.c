@@ -40,30 +40,31 @@ static volatile bool s_done;
         } while (0)
 
 /* 阻塞在信号量上的等待者 */
-static void _sem_waiter(void *arg)
+static void *_sem_waiter(void *arg)
 {
     (void)arg;
     s_wake_err = ek_os_sem_take(s_sem, EK_OS_FOREVER);
-    for (;;) ek_os_thread_sleep(1000);
+    return (void *)(intptr_t)42;
 }
 
 /* 只置一次标志的高优先级线程 */
-static void _high_thread(void *arg)
+static void *_high_thread(void *arg)
 {
     (void)arg;
     s_high_ran = true;
-    for (;;) ek_os_thread_sleep(1000);
+    return NULL;
 }
 
-static void _low_thread(void *arg)
+static void *_low_thread(void *arg)
 {
     (void)arg;
     /* 创建更高优先级线程，期望它立刻抢占本线程 */
-    ek_os_thread_create("os_high", _high_thread, NULL, PRIO_HIGH, TEST_STACK);
-    for (;;) ek_os_thread_sleep(1000);
+    int high_tid = ek_os_thread_create("os_high", _high_thread, NULL, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_join(high_tid, -1, NULL);
+    return NULL;
 }
 
-static void _test_main(void *arg)
+static void *_test_main(void *arg)
 {
     (void)arg;
 
@@ -95,38 +96,42 @@ static void _test_main(void *arg)
         for (;;) ek_os_thread_sleep(1000);
     }
 
-    ek_os_thread_create("os_waiter", _sem_waiter, NULL, PRIO_MID, TEST_STACK);
+    int waiter_tid = ek_os_thread_create("os_waiter", _sem_waiter, NULL, PRIO_MID, TEST_STACK);
     ek_os_thread_sleep(2000); /* 让 waiter 进入阻塞 */
     EK_LOG_INFO("waiter err before give = %d", s_wake_err);
     OS_CHECK(s_wake_err == -1, "waiter blocked on sem");
+    OS_CHECK(ek_os_thread_join(waiter_tid, 0, NULL) == -EAGAIN, "join(0) on running thread returns -EAGAIN");
+    OS_CHECK(ek_os_thread_join(ek_os_kernel_current_tid(), 0, NULL) == -EDEADLK, "join self returns -EDEADLK");
 
     OS_CHECK(ek_os_sem_give(s_sem) == 0, "sem give ok");
-    ek_os_thread_sleep(2000);
-    EK_LOG_INFO("waiter err after give = %d", s_wake_err);
+    void *join_ret = NULL;
+    int join_err = ek_os_thread_join(waiter_tid, -1, &join_ret);
+    EK_LOG_INFO("waiter err after give = %d, join_ret = %d", s_wake_err, (int)(intptr_t)join_ret);
     OS_CHECK(s_wake_err == 0, "waiter woken by give");
+    OS_CHECK(join_err == 0 && (int)(intptr_t)join_ret == 42, "join returns child exit code 42");
+    OS_CHECK(ek_os_thread_join(waiter_tid, 0, NULL) == -ESRCH, "re-join returns -ESRCH");
 
-    /* ---- 3. 优先级抢占 ---- */
+    /* ---- 3. 优先级抢占（兼测先死后 join） ---- */
     s_high_ran = false;
-    ek_os_thread_create("os_low", _low_thread, NULL, PRIO_LOW, TEST_STACK);
+    int low_tid = ek_os_thread_create("os_low", _low_thread, NULL, PRIO_LOW, TEST_STACK);
     ek_os_thread_sleep(2000);
     OS_CHECK(s_high_ran, "higher prio thread preempts");
+    OS_CHECK(ek_os_thread_join(low_tid, -1, NULL) == 0, "join already-dead thread returns 0");
 
     /* ---- 4. 调度器锁阻止抢占 ---- */
     s_high_ran = false;
     OS_CHECK(ek_os_kernel_sched_lock() >= 1, "sched lock");
-    ek_os_thread_create("os_high2", _high_thread, NULL, PRIO_HIGH, TEST_STACK);
+    int high2_tid = ek_os_thread_create("os_high2", _high_thread, NULL, PRIO_HIGH, TEST_STACK);
     OS_CHECK(!s_high_ran, "sched lock blocks preemption");
     OS_CHECK(ek_os_kernel_sched_unlock() == 0, "sched unlock");
     ek_os_thread_sleep(2000);
     OS_CHECK(s_high_ran, "unlock allows preemption");
+    OS_CHECK(ek_os_thread_join(high2_tid, -1, NULL) == 0, "join high2 returns 0");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
 
-    for (;;)
-    {
-        ek_os_thread_sleep(1000);
-    }
+    return NULL;
 }
 
 void os_test(void)
