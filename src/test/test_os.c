@@ -13,9 +13,9 @@
 
 EK_LOG_MODULE("test_os", EK_LOG_LEVEL_DEBUG);
 
-#    define PRIO_HIGH (3U)
-#    define PRIO_MID  (5U)
-#    define PRIO_LOW  (10U)
+#    define PRIO_HIGH  (3U)
+#    define PRIO_MID   (5U)
+#    define PRIO_LOW   (10U)
 
 #    define TEST_STACK (768U)
 
@@ -25,18 +25,18 @@ static volatile int s_wake_err = -1;
 static volatile bool s_high_ran;
 static volatile bool s_done;
 
-#    define OS_CHECK(cond, msg)                         \
-        do                                              \
-        {                                               \
-            if (cond)                                   \
-            {                                           \
-                EK_LOG_INFO("PASS: %s", (msg));         \
-            }                                           \
-            else                                        \
-            {                                           \
-                EK_LOG_ERROR("FAIL: %s", (msg));        \
-                s_done = true;                          \
-            }                                           \
+#    define OS_CHECK(cond, msg)                  \
+        do                                       \
+        {                                        \
+            if (cond)                            \
+            {                                    \
+                EK_LOG_INFO("PASS: %s", (msg));  \
+            }                                    \
+            else                                 \
+            {                                    \
+                EK_LOG_ERROR("FAIL: %s", (msg)); \
+                s_done = true;                   \
+            }                                    \
         } while (0)
 
 /* 阻塞在信号量上的等待者 */
@@ -123,7 +123,10 @@ static void _test_main(void *arg)
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
 
-    for (;;) ek_os_thread_sleep(1000);
+    for (;;)
+    {
+        ek_os_thread_sleep(1000);
+    }
 }
 
 void os_test(void)
