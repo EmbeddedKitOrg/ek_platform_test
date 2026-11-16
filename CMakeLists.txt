@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/lib/ek_platform/cmake/platform.cmake)
-ek_platform_prepare(ARCH cm4 PICOLIBC ON)
+ek_platform_prepare(ARCH cm4 PICOLIBC ON BUILD_TYPE Debug)
 set(PICOLIBC_FETCH ON)
 
 project(main LANGUAGES C CXX ASM)
@@ -43,5 +43,4 @@ target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
     -fdiagnostics-color=always
     -Wall
     -Wextra
-    -g
 )

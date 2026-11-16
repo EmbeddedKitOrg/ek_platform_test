@@ -19,9 +19,9 @@
 #    include "ek/core/export.h"
 
 /* 单次闹钟 */
-#    define OS_ALARM_TIMER     TIMER5
-#    define OS_ALARM_RCU       RCU_TIMER5
-#    define OS_ALARM_IRQ       TIMER5_DAC_IRQn
+#    define OS_ALARM_TIMER TIMER5
+#    define OS_ALARM_RCU   RCU_TIMER5
+#    define OS_ALARM_IRQ   TIMER5_DAC_IRQn
 
 /* 计数频率：1 MHz，即 1 tick = 1 us */
 #    define OS_TIMER_TICK_HZ (1000000U)

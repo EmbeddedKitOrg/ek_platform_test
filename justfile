@@ -11,8 +11,8 @@ alias fmt := format
 clean:
     rm -rf build
 
-build:
-    cmake -B build -G Ninja
+build mode="Debug":
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE={{mode}}
     ninja -C build
 
 flash:build

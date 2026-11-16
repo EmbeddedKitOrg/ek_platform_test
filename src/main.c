@@ -28,7 +28,7 @@ int main(void)
     // vec_test();
     // vfs_test();
     // shell_test();
-    EK_LOG_INFO("hello");
+    EK_LOG_INFO("hello (%s)", ek_build_mode_str());
 
 #if EKCFG_RTOS == 1
     EK_LOG_INFO("main: entering RTOS");
@@ -45,9 +45,8 @@ int main(void)
         EK_LOG_INFO("svc   vec=0x%08lx want=0x%08lx",
                     (unsigned long)vt[11],
                     (unsigned long)(uintptr_t)ek_arch_start_first_thread);
-        EK_LOG_INFO("pendsv vec=0x%08lx want=0x%08lx",
-                    (unsigned long)vt[14],
-                    (unsigned long)(uintptr_t)ek_arch_switch_thread);
+        EK_LOG_INFO(
+            "pendsv vec=0x%08lx want=0x%08lx", (unsigned long)vt[14], (unsigned long)(uintptr_t)ek_arch_switch_thread);
     }
 
     os_test(); /* 创建自检线程，内核启动后才开始运行 */
