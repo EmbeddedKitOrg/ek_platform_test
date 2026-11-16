@@ -21,6 +21,18 @@ tcmram: Memory.MappedMemory @ sysbus 0x10000000
 usart0: UART.STM32_UART @ sysbus <0x40011000, +0x100>
     -> nvic@37
 
+// GD32 TIMER4 = 32 位通用定时器（自由运行做时间源）
+timer4: Timers.STM32_Timer @ sysbus 0x40000C00
+    -> nvic@50
+    frequency: 1000000
+    initialLimit: 0xFFFFFFFF
+
+// GD32 TIMER5 = 基本定时器（单次闹钟）
+timer5: Timers.STM32_Timer @ sysbus 0x40001000
+    -> nvic@54
+    frequency: 1000000
+    initialLimit: 0xFFFF
+
 sysbus:
     init:
         // RCU：预置 HXTAL/PLL 稳定标志，并让 CFG0.SCS 显示 PLLP 已选中，
