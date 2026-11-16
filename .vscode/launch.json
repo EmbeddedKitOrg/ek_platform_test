@@ -27,13 +27,13 @@
         {
             "name": "Cortex Debug",
             "cwd": "${workspaceFolder}",
-            "executable": "./build/ek_utils_test.elf",
+            "executable": "./build/main.elf",
             "request": "launch",
             "type": "cortex-debug",
             "runToEntryPoint": "main",
             "servertype": "openocd",
             "configFiles": [
-                "interface/stlink.cfg",
+                "interface/cmsis-dap.cfg",
                 "target/stm32f4x.cfg"
             ]
         }
