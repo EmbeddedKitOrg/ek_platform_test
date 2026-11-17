@@ -8,11 +8,13 @@
 #if EKCFG_RTOS == 1
 
 #    include "ek/os/kernel.h"
+#    include "ek/os/mutex.h"
 #    include "ek/os/sem.h"
 #    include "ek/os/thread.h"
 
 EK_LOG_MODULE("test_os", EK_LOG_LEVEL_DEBUG);
 
+#    define PRIO_TEST  (2U)
 #    define PRIO_HIGH  (3U)
 #    define PRIO_MID   (5U)
 #    define PRIO_LOW   (10U)
@@ -24,6 +26,22 @@ static ek_os_sem_t *s_sem;
 static volatile int s_wake_err = -1;
 static volatile bool s_high_ran;
 static volatile bool s_done;
+
+static ek_os_mutex_t *s_mtx;
+static ek_os_mutex_t *s_mtx_a;
+static ek_os_mutex_t *s_mtx_b;
+
+static volatile bool s_mtx_locked;
+static volatile int s_mtx_waiter_err;
+static volatile bool s_inh_mid_ran;
+static volatile bool s_inh_mid_ran_at_unlock;
+static volatile uint8_t s_inh_low_prio_after;
+
+static union
+{
+    ek_os_mutex_t align;
+    uint8_t buf[EK_OS_MUTEX_STATIC_BUF_SIZE];
+} s_static_mtx_mem;
 
 #    define OS_CHECK(cond, msg)                  \
         do                                       \
@@ -61,6 +79,267 @@ static void *_low_thread(void *arg)
     /* 创建更高优先级线程，期望它立刻抢占本线程 */
     int high_tid = ek_os_thread_create("os_high", _high_thread, NULL, PRIO_HIGH, TEST_STACK);
     ek_os_thread_join(high_tid, -1, NULL);
+    return NULL;
+}
+
+/* 持锁 20 ms，供其它线程验证 trylock 竞争 */
+static void *_mtx_holder(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+    s_mtx_locked = true;
+    ek_os_thread_sleep(20000);
+    ek_os_mutex_unlock(s_mtx);
+    s_mtx_locked = false;
+    return NULL;
+}
+
+/* 尝试拿锁并把结果写入 s_mtx_waiter_err；未返回前该值为哨兵 1 */
+static void *_mtx_waiter(void *arg)
+{
+    (void)arg;
+    int err = ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+    s_mtx_waiter_err = err;
+    if (err == 0) ek_os_mutex_unlock(s_mtx);
+    return NULL;
+}
+
+/* 持锁后故意不走 unlock 直接退出，验证内核回收锁 */
+static void *_mtx_exit_holder(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+    ek_os_thread_sleep(20000);
+    return NULL;
+}
+
+/* 优先级继承：持锁忙等 60 ms，期间高优先级线程抢锁把本线程提权 */
+static void *_inh_low(void *arg)
+{
+    (void)arg;
+    int self = ek_os_kernel_current_tid();
+
+    ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+
+    /* 忙等而非睡眠：睡眠会把本线程移出就绪队列，MID 仍可拿到 CPU，测不出继承 */
+    uint64_t deadline = ek_os_kernel_time() + 60000ULL;
+    while (ek_os_kernel_time() < deadline)
+    {
+    }
+
+    /* 若继承生效，本线程此刻有效优先级为 PRIO_HIGH，MID 抢不到 CPU */
+    s_inh_mid_ran_at_unlock = s_inh_mid_ran;
+    ek_os_mutex_unlock(s_mtx);
+
+    uint8_t prio = 0;
+    ek_os_thread_get_prio(self, &prio);
+    s_inh_low_prio_after = prio;
+    return NULL;
+}
+
+/* 优先级继承：优先级介于 HIGH 与 LOW 之间，继承失效时会抢占 LOW */
+static void *_inh_mid(void *arg)
+{
+    (void)arg;
+    ek_os_thread_sleep(35000);
+    s_inh_mid_ran = true;
+    return NULL;
+}
+
+/* 优先级继承：抢锁并阻塞，触发持有者提权 */
+static void *_inh_high(void *arg)
+{
+    (void)arg;
+    int err = ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+    if (err == 0) ek_os_mutex_unlock(s_mtx);
+    return NULL;
+}
+
+/* 链式继承：持 s_mtx_a 睡觉 */
+static void *_chain_low(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_mtx_a, EK_OS_FOREVER);
+    ek_os_thread_sleep(80000);
+    ek_os_mutex_unlock(s_mtx_a);
+    return NULL;
+}
+
+/* 链式继承：先持 s_mtx_b，再等 s_mtx_a，从而把 HIGH 的优先级传给 LOW */
+static void *_chain_mid(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_mtx_b, EK_OS_FOREVER);
+    ek_os_mutex_lock(s_mtx_a, EK_OS_FOREVER);
+    ek_os_mutex_unlock(s_mtx_a);
+    ek_os_mutex_unlock(s_mtx_b);
+    return NULL;
+}
+
+/* 链式继承：等 s_mtx_b，触发 MID 提权并沿等待链回溯到 LOW */
+static void *_chain_high(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_mtx_b, EK_OS_FOREVER);
+    ek_os_mutex_unlock(s_mtx_b);
+    return NULL;
+}
+
+/* 互斥量用例：基础加锁、重入、跨线程竞争、优先级继承、销毁、持锁退出、静态创建 */
+static void _mutex_test(void)
+{
+    /* ---- 5. 参数边界 ---- */
+    OS_CHECK(ek_os_mutex_lock(NULL, 0) == -ENOENT, "lock(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_mutex_unlock(NULL) == -ENOENT, "unlock(NULL) returns -ENOENT");
+
+    s_mtx = ek_os_mutex_create();
+    OS_CHECK(s_mtx != NULL, "mutex create");
+    if (!s_mtx)
+    {
+        s_done = true;
+        return;
+    }
+
+    /* ---- 6. 基础加锁与重入 ---- */
+    OS_CHECK(ek_os_mutex_unlock(s_mtx) == -EPERM, "unlock free mutex returns -EPERM");
+    OS_CHECK(ek_os_mutex_lock(s_mtx, 0) == 0, "lock on free mutex");
+    OS_CHECK(ek_os_mutex_lock(s_mtx, 0) == 0, "relock is reentrant");
+    OS_CHECK(ek_os_mutex_unlock(s_mtx) == 0, "unlock inner level");
+    OS_CHECK(ek_os_mutex_unlock(s_mtx) == 0, "unlock outer level");
+    OS_CHECK(ek_os_mutex_trylock(s_mtx) == 0, "trylock on free mutex");
+    OS_CHECK(ek_os_mutex_trylock(s_mtx) == 0, "trylock is reentrant");
+    OS_CHECK(ek_os_mutex_unlock(s_mtx) == 0, "unlock trylock inner");
+    OS_CHECK(ek_os_mutex_unlock(s_mtx) == 0, "unlock trylock outer");
+
+    /* ---- 7. 跨线程竞争：trylock / 非阻塞 lock 返回 -EAGAIN ---- */
+    s_mtx_locked = false;
+    int holder_tid = ek_os_thread_create("mtx_holder", _mtx_holder, NULL, PRIO_LOW, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_mtx_locked, "holder acquired mutex");
+    OS_CHECK(ek_os_mutex_trylock(s_mtx) == -EAGAIN, "trylock on held mutex returns -EAGAIN");
+    OS_CHECK(ek_os_mutex_lock(s_mtx, 0) == -EAGAIN, "non-blocking lock on held returns -EAGAIN");
+    OS_CHECK(ek_os_thread_join(holder_tid, -1, NULL) == 0, "join mutex holder");
+    OS_CHECK(!s_mtx_locked, "holder released mutex");
+
+    /* ---- 8. 优先级继承：等待者优先级传给持有者，释锁后回落 ---- */
+    s_inh_mid_ran = false;
+    s_inh_mid_ran_at_unlock = false;
+    s_inh_low_prio_after = 0;
+
+    int inh_low_tid = ek_os_thread_create("inh_low", _inh_low, NULL, PRIO_LOW, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    int inh_mid_tid = ek_os_thread_create("inh_mid", _inh_mid, NULL, PRIO_MID, TEST_STACK);
+    ek_os_thread_sleep(2000);
+    int inh_high_tid = ek_os_thread_create("inh_high", _inh_high, NULL, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(2000);
+
+    uint8_t low_prio = 0;
+    OS_CHECK(ek_os_thread_get_prio(inh_low_tid, &low_prio) == 0, "query owner priority");
+    OS_CHECK(low_prio == PRIO_HIGH, "owner inherits waiter priority");
+
+    OS_CHECK(ek_os_thread_join(inh_high_tid, -1, NULL) == 0, "join inheriting waiter");
+    OS_CHECK(!s_inh_mid_ran_at_unlock, "inheritance keeps mid priority thread out");
+    OS_CHECK(ek_os_thread_join(inh_low_tid, -1, NULL) == 0, "join inherited owner");
+    OS_CHECK(s_inh_low_prio_after == PRIO_LOW, "owner priority restored after unlock");
+    OS_CHECK(ek_os_thread_join(inh_mid_tid, -1, NULL) == 0, "join mid thread");
+
+    ek_os_mutex_destroy(s_mtx);
+    s_mtx = NULL;
+
+    /* ---- 9. destroy 唤醒等待者返回 -ECANCELED ---- */
+    s_mtx = ek_os_mutex_create();
+    OS_CHECK(s_mtx != NULL, "mutex create for destroy");
+    s_mtx_waiter_err = 1;
+    if (s_mtx)
+    {
+        OS_CHECK(ek_os_mutex_lock(s_mtx, 0) == 0, "test thread holds mutex");
+        int cancel_tid = ek_os_thread_create("mtx_cancel", _mtx_waiter, NULL, PRIO_LOW, TEST_STACK);
+        ek_os_thread_sleep(5000);
+        OS_CHECK(s_mtx_waiter_err == 1, "waiter still blocked on mutex");
+
+        ek_os_mutex_destroy(s_mtx);
+        s_mtx = NULL;
+
+        OS_CHECK(ek_os_thread_join(cancel_tid, -1, NULL) == 0, "join cancelled waiter");
+        OS_CHECK(s_mtx_waiter_err == -ECANCELED, "destroy wakes waiter with -ECANCELED");
+    }
+
+    /* ---- 10. 持锁线程退出时由内核清理锁 ---- */
+    s_mtx = ek_os_mutex_create();
+    OS_CHECK(s_mtx != NULL, "mutex create for owner exit");
+    s_mtx_waiter_err = 1;
+    if (s_mtx)
+    {
+        int holder_exit_tid = ek_os_thread_create("mtx_exit_hold", _mtx_exit_holder, NULL, PRIO_LOW, TEST_STACK);
+        ek_os_thread_sleep(3000);
+        int waiter_exit_tid = ek_os_thread_create("mtx_exit_wait", _mtx_waiter, NULL, PRIO_LOW, TEST_STACK);
+        ek_os_thread_sleep(3000);
+        OS_CHECK(s_mtx_waiter_err == 1, "waiter blocked on exiting owner");
+
+        OS_CHECK(ek_os_thread_join(holder_exit_tid, -1, NULL) == 0, "join owner that exits holding lock");
+        OS_CHECK(ek_os_thread_join(waiter_exit_tid, -1, NULL) == 0, "join waiter released by owner exit");
+        OS_CHECK(s_mtx_waiter_err == -ECANCELED, "owner exit wakes waiter with -ECANCELED");
+
+        ek_os_mutex_destroy(s_mtx);
+        s_mtx = NULL;
+    }
+
+    /* ---- 11. 优先级继承沿等待链传播 ---- */
+    s_mtx_a = ek_os_mutex_create();
+    s_mtx_b = ek_os_mutex_create();
+    OS_CHECK(s_mtx_a != NULL && s_mtx_b != NULL, "mutex create for inheritance chain");
+    if (s_mtx_a && s_mtx_b)
+    {
+        int chain_low_tid = ek_os_thread_create("chain_low", _chain_low, NULL, PRIO_LOW, TEST_STACK);
+        ek_os_thread_sleep(5000);
+        int chain_mid_tid = ek_os_thread_create("chain_mid", _chain_mid, NULL, PRIO_MID, TEST_STACK);
+        ek_os_thread_sleep(5000);
+
+        uint8_t p_low = 0;
+        uint8_t p_mid = 0;
+        OS_CHECK(ek_os_thread_get_prio(chain_low_tid, &p_low) == 0, "query chain low priority");
+        OS_CHECK(p_low == PRIO_MID, "chain: low inherits mid priority");
+
+        int chain_high_tid = ek_os_thread_create("chain_high", _chain_high, NULL, PRIO_HIGH, TEST_STACK);
+        ek_os_thread_sleep(5000);
+
+        OS_CHECK(ek_os_thread_get_prio(chain_mid_tid, &p_mid) == 0, "query chain mid priority");
+        OS_CHECK(p_mid == PRIO_HIGH, "chain: mid inherits high priority");
+        OS_CHECK(ek_os_thread_get_prio(chain_low_tid, &p_low) == 0, "query chain low priority again");
+        OS_CHECK(p_low == PRIO_HIGH, "chain: inheritance reaches low owner");
+
+        OS_CHECK(ek_os_thread_join(chain_low_tid, -1, NULL) == 0, "join chain low");
+        OS_CHECK(ek_os_thread_join(chain_mid_tid, -1, NULL) == 0, "join chain mid");
+        OS_CHECK(ek_os_thread_join(chain_high_tid, -1, NULL) == 0, "join chain high");
+
+        ek_os_mutex_destroy(s_mtx_a);
+        ek_os_mutex_destroy(s_mtx_b);
+        s_mtx_a = NULL;
+        s_mtx_b = NULL;
+    }
+
+    /* ---- 12. 静态缓冲区创建与销毁失效 ---- */
+    ek_os_mutex_t *st_mtx = ek_os_mutex_create_static(s_static_mtx_mem.buf, sizeof(s_static_mtx_mem.buf));
+    OS_CHECK(st_mtx != NULL, "mutex create_static");
+    if (st_mtx)
+    {
+        OS_CHECK(ek_os_mutex_lock(st_mtx, 0) == 0, "lock static mutex");
+        OS_CHECK(ek_os_mutex_unlock(st_mtx) == 0, "unlock static mutex");
+        ek_os_mutex_destroy(st_mtx);
+        OS_CHECK(ek_os_mutex_trylock(st_mtx) == -ENOENT, "destroyed static mutex rejected");
+    }
+
+    /* ---- 13. 优先级查询边界 ---- */
+    uint8_t dummy_prio = 0;
+    OS_CHECK(ek_os_thread_get_prio(ek_os_kernel_current_tid(), NULL) == -EINVAL, "get_prio(NULL) returns -EINVAL");
+    OS_CHECK(ek_os_thread_get_prio(9999, &dummy_prio) == -ESRCH, "get_prio(bad tid) returns -ESRCH");
+}
+
+/* mutex 用例需要随时抢占被提权到 PRIO_HIGH 的持有者，故跑在更高的优先级上 */
+static void *_mutex_main(void *arg)
+{
+    (void)arg;
+    _mutex_test();
     return NULL;
 }
 
@@ -127,6 +406,9 @@ static void *_test_main(void *arg)
     ek_os_thread_sleep(2000);
     OS_CHECK(s_high_ran, "unlock allows preemption");
     OS_CHECK(ek_os_thread_join(high2_tid, -1, NULL) == 0, "join high2 returns 0");
+
+    int mtx_tid = ek_os_thread_create("mtx_main", _mutex_main, NULL, PRIO_TEST, 1536);
+    OS_CHECK(ek_os_thread_join(mtx_tid, -1, NULL) == 0, "join mutex test thread");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
