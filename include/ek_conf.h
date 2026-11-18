@@ -24,9 +24,7 @@
  * ======================================================================== */
 
 #define EKCFG_EXPORT (1)
-/* EKCFG_ASSERT 默认跟随 Debug/Release 自动开关，如需在 Release 下强制开启可取消注释 */
-/* #define EKCFG_ASSERT (1) */
-#define EKCFG_LOG (1)
+#define EKCFG_LOG    (1)
 
 /* ========================================================================
  * 数据结构
@@ -50,16 +48,12 @@
  * 模块子配置 — 根据实际硬件调整
  * ======================================================================== */
 
-#define EKCFG_ARCH_IRQ_COUNT (91)
-#define EKCFG_HEAP_TLSF      (1)
-#define EKCFG_HEAP_SIZE      (64 * 1024)
-#define EKCFG_HEAP_SECTION   ".tcmram"
-/* EKCFG_LOG_DEBUG / EKCFG_ASSERT_* 默认随 Debug/Release 自动切换，如需强行覆盖可取消注释 */
-/* #define EKCFG_LOG_DEBUG          (1) */
-#define EKCFG_LOG_COLOR    (1)
-#define EKCFG_LOG_BUF_SIZE (128)
-/* #define EKCFG_ASSERT_TINY        (1) */
-/* #define EKCFG_ASSERT_LOG         (1) */
+#define EKCFG_ARCH_IRQ_COUNT     (91)
+#define EKCFG_HEAP_TLSF          (1)
+#define EKCFG_HEAP_SIZE          (64 * 1024)
+#define EKCFG_HEAP_SECTION       ".tcmram"
+#define EKCFG_LOG_COLOR          (1)
+#define EKCFG_LOG_BUF_SIZE       (128)
 #define EKCFG_VFS_TREE_DUMP_UTF8 (1)
 #define EKCFG_SHELL              (1)
 #define EKCFG_SHELL_BUF_SIZE     (256)

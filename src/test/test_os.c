@@ -8,11 +8,28 @@
 #if EKCFG_RTOS == 1
 
 #    include "ek/os/kernel.h"
+#    include "ek/os/msgq.h"
 #    include "ek/os/mutex.h"
 #    include "ek/os/sem.h"
 #    include "ek/os/thread.h"
 
-EK_LOG_MODULE("test_os", EK_LOG_LEVEL_DEBUG);
+EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_DEBUG);
+
+static volatile bool s_done;
+
+#    define OS_CHECK(cond, msg)                  \
+        do                                       \
+        {                                        \
+            if (cond)                            \
+            {                                    \
+                EK_LOG_INFO("PASS: %s", (msg));  \
+            }                                    \
+            else                                 \
+            {                                    \
+                EK_LOG_ERROR("FAIL: %s", (msg)); \
+                s_done = true;                   \
+            }                                    \
+        } while (0)
 
 #    define PRIO_TEST  (2U)
 #    define PRIO_HIGH  (3U)
@@ -343,6 +360,173 @@ static void *_mutex_main(void *arg)
     return NULL;
 }
 
+/* ---------------- 消息队列自检 ---------------- */
+
+static ek_os_msgq_t *s_q;
+static volatile int s_msgq_send_err;
+static volatile int s_msgq_recv_err;
+static volatile uint32_t s_msgq_recv_val;
+
+/* 往容量为 1 的队列再发一条，会被阻塞到主控取走第一条 */
+static void *_msgq_sender(void *arg)
+{
+    (void)arg;
+    uint32_t v = 0x1234U;
+    s_msgq_send_err = ek_os_msgq_send(s_q, &v, EK_OS_FOREVER);
+    return NULL;
+}
+
+/* 从空队列收一条，会被阻塞到主控发送 */
+static void *_msgq_receiver(void *arg)
+{
+    (void)arg;
+    uint32_t v = 0;
+    s_msgq_recv_err = ek_os_msgq_recv(s_q, &v, EK_OS_FOREVER);
+    s_msgq_recv_val = v;
+    return NULL;
+}
+
+static void _msgq_test(void)
+{
+    /* ---- 参数校验 ---- */
+    OS_CHECK(ek_os_msgq_create(0, 4) == NULL, "msgq create rejects zero item_size");
+    OS_CHECK(ek_os_msgq_create(4, 0) == NULL, "msgq create rejects zero depth");
+    OS_CHECK(ek_os_msgq_create_static(4, 4, NULL, 64) == NULL, "msgq create_static rejects NULL buf");
+
+    /* ---- 动态创建、空队列与非阻塞语义 ---- */
+    s_q = ek_os_msgq_create(sizeof(uint32_t), 4);
+    OS_CHECK(s_q != NULL, "msgq create");
+    if (!s_q)
+    {
+        EK_LOG_INFO("msgq_test finished: FAILED");
+        s_done = true;
+        return;
+    }
+
+    uint32_t v = 0;
+    OS_CHECK(ek_os_msgq_count(s_q) == 0, "msgq starts empty");
+    OS_CHECK(ek_os_msgq_recv(s_q, &v, 0) == -EAGAIN, "recv on empty returns -EAGAIN");
+
+    for (uint32_t i = 0; i < 4; i++)
+    {
+        v = i;
+        OS_CHECK(ek_os_msgq_send(s_q, &v, 0) == 0, "send fills queue");
+    }
+    OS_CHECK(ek_os_msgq_count(s_q) == 4, "msgq count reaches capacity");
+    v = 99;
+    OS_CHECK(ek_os_msgq_send(s_q, &v, 0) == -EAGAIN, "send on full returns -EAGAIN");
+
+    for (uint32_t i = 0; i < 4; i++)
+    {
+        v = 0xFFFFFFFFU;
+        OS_CHECK(ek_os_msgq_recv(s_q, &v, 0) == 0, "recv drains queue");
+        OS_CHECK(v == i, "recv is FIFO");
+    }
+    OS_CHECK(ek_os_msgq_count(s_q) == 0, "msgq empty after drain");
+    OS_CHECK(ek_os_msgq_recv(s_q, &v, 0) == -EAGAIN, "recv after drain returns -EAGAIN");
+
+    /* ---- 环形复用：读写指针错位后仍按 FIFO 工作 ---- */
+    for (uint32_t round = 0; round < 3; round++)
+    {
+        for (uint32_t i = 0; i < 3; i++)
+        {
+            v = round * 10U + i;
+            OS_CHECK(ek_os_msgq_send(s_q, &v, 0) == 0, "ring: send wraps");
+        }
+        for (uint32_t i = 0; i < 3; i++)
+        {
+            v = 0;
+            OS_CHECK(ek_os_msgq_recv(s_q, &v, 0) == 0, "ring: recv wraps");
+            OS_CHECK(v == round * 10U + i, "ring: FIFO across wrap");
+        }
+        OS_CHECK(ek_os_msgq_count(s_q) == 0, "ring: empty after round");
+    }
+
+    ek_os_msgq_destroy(s_q);
+    s_q = NULL;
+
+    /* ---- 满队列阻塞发送者，被 recv 唤醒 ---- */
+    s_q = ek_os_msgq_create(sizeof(uint32_t), 1);
+    OS_CHECK(s_q != NULL, "msgq create depth 1");
+    if (!s_q)
+    {
+        EK_LOG_INFO("msgq_test finished: FAILED");
+        s_done = true;
+        return;
+    }
+
+    v = 7;
+    OS_CHECK(ek_os_msgq_send(s_q, &v, 0) == 0, "fill depth-1 queue");
+
+    s_msgq_send_err = -1;
+    int sender_tid = ek_os_thread_create("msgq_tx", _msgq_sender, NULL, PRIO_MID, TEST_STACK);
+    ek_os_thread_sleep(20000);
+    OS_CHECK(s_msgq_send_err == -1, "sender blocked on full queue");
+
+    v = 0;
+    OS_CHECK(ek_os_msgq_recv(s_q, &v, 0) == 0, "recv releases blocked sender");
+    OS_CHECK(v == 7, "blocked sender kept FIFO order");
+    OS_CHECK(ek_os_thread_join(sender_tid, -1, NULL) == 0, "join blocked sender");
+    OS_CHECK(s_msgq_send_err == 0, "sender resumed after recv");
+
+    v = 0;
+    OS_CHECK(ek_os_msgq_recv(s_q, &v, 0) == 0, "receive sender payload");
+    OS_CHECK(v == 0x1234U, "sender payload intact");
+
+    /* ---- 空队列阻塞接收者，被 send 唤醒 ---- */
+    s_msgq_recv_err = -1;
+    int recv_tid = ek_os_thread_create("msgq_rx", _msgq_receiver, NULL, PRIO_MID, TEST_STACK);
+    ek_os_thread_sleep(20000);
+    OS_CHECK(s_msgq_recv_err == -1, "receiver blocked on empty queue");
+
+    v = 0x55AAU;
+    OS_CHECK(ek_os_msgq_send(s_q, &v, 0) == 0, "send releases blocked receiver");
+    OS_CHECK(ek_os_thread_join(recv_tid, -1, NULL) == 0, "join blocked receiver");
+    OS_CHECK(s_msgq_recv_err == 0, "receiver resumed after send");
+    OS_CHECK(s_msgq_recv_val == 0x55AAU, "receiver got payload");
+
+    /* ---- destroy 唤醒阻塞等待者 ---- */
+    s_msgq_recv_err = -1;
+    int wait_tid = ek_os_thread_create("msgq_cancel", _msgq_receiver, NULL, PRIO_MID, TEST_STACK);
+    ek_os_thread_sleep(20000);
+    OS_CHECK(s_msgq_recv_err == -1, "waiter blocked before destroy");
+
+    ek_os_msgq_destroy(s_q);
+    s_q = NULL;
+    OS_CHECK(ek_os_thread_join(wait_tid, -1, NULL) == 0, "join waiter cancelled by destroy");
+    OS_CHECK(s_msgq_recv_err == -ECANCELED, "destroy wakes waiter with -ECANCELED");
+
+    /* ---- 静态缓冲区创建 ---- */
+    static union
+    {
+        ek_os_msgq_t align;
+        uint8_t buf[EK_OS_MSGQ_STATIC_BUF_SIZE(sizeof(uint32_t), 2)];
+    } st_mem;
+
+    ek_os_msgq_t *st_q = ek_os_msgq_create_static(sizeof(uint32_t), 2, st_mem.buf, sizeof(st_mem.buf));
+    OS_CHECK(st_q != NULL, "msgq create_static");
+    if (st_q)
+    {
+        v = 0xABCDU;
+        OS_CHECK(ek_os_msgq_send(st_q, &v, 0) == 0, "static: send");
+        v = 0;
+        OS_CHECK(ek_os_msgq_recv(st_q, &v, 0) == 0, "static: recv");
+        OS_CHECK(v == 0xABCDU, "static: payload intact");
+
+        ek_os_msgq_destroy(st_q);
+        OS_CHECK(ek_os_msgq_count(st_q) == -ENOENT, "destroyed static msgq rejected");
+    }
+
+    EK_LOG_INFO("msgq_test finished: %s", s_done ? "FAILED" : "ALL PASS");
+}
+
+static void *_msgq_main(void *arg)
+{
+    (void)arg;
+    _msgq_test();
+    return NULL;
+}
+
 static void *_test_main(void *arg)
 {
     (void)arg;
@@ -409,6 +593,9 @@ static void *_test_main(void *arg)
 
     int mtx_tid = ek_os_thread_create("mtx_main", _mutex_main, NULL, PRIO_TEST, 1536);
     OS_CHECK(ek_os_thread_join(mtx_tid, -1, NULL) == 0, "join mutex test thread");
+
+    int msgq_tid = ek_os_thread_create("msgq_main", _msgq_main, NULL, PRIO_TEST, 1536);
+    OS_CHECK(ek_os_thread_join(msgq_tid, -1, NULL) == 0, "join msgq test thread");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
