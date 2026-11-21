@@ -1,12 +1,13 @@
 /**
  * @file test_os.c
- * @brief RTOS 内核自检：sleep 精度、信号量阻塞唤醒、优先级抢占、调度器锁
+ * @brief RTOS 内核自检：sleep 精度、信号量、互斥量、消息队列、条件变量、优先级抢占、调度器锁
  */
 
 #include "test.h"
 
 #if EKCFG_RTOS == 1
 
+#    include "ek/os/condvar.h"
 #    include "ek/os/kernel.h"
 #    include "ek/os/msgq.h"
 #    include "ek/os/mutex.h"
@@ -59,6 +60,20 @@ static union
     ek_os_mutex_t align;
     uint8_t buf[EK_OS_MUTEX_STATIC_BUF_SIZE];
 } s_static_mtx_mem;
+
+static ek_os_condvar_t *s_cv;
+static ek_os_mutex_t *s_cv_mtx;
+static volatile bool s_cv_ready;
+static volatile int s_cv_wake_cnt;
+static volatile int s_cv_order[4];
+static volatile int s_cv_wait_err[4];
+static volatile int s_cv_unlock_err[4];
+
+static union
+{
+    ek_os_condvar_t align;
+    uint8_t buf[EK_OS_CONDVAR_STATIC_BUF_SIZE];
+} s_static_cv_mem;
 
 #    define OS_CHECK(cond, msg)                  \
         do                                       \
@@ -527,6 +542,215 @@ static void *_msgq_main(void *arg)
     return NULL;
 }
 
+static void *_cv_signal_waiter(void *arg)
+{
+    int id = (int)(intptr_t)arg;
+    int err = 0;
+
+    ek_os_mutex_lock(s_cv_mtx, EK_OS_FOREVER);
+    while (!s_cv_ready)
+    {
+        err = ek_os_condvar_wait(s_cv, s_cv_mtx, EK_OS_FOREVER);
+        if (err != 0) break;
+    }
+    s_cv_wait_err[id] = err;
+    if (err == 0)
+    {
+        s_cv_order[s_cv_wake_cnt++] = id;
+    }
+    s_cv_unlock_err[id] = ek_os_mutex_unlock(s_cv_mtx);
+    return NULL;
+}
+
+static void *_cv_broadcast_waiter(void *arg)
+{
+    int id = (int)(intptr_t)arg;
+    int err = 0;
+
+    ek_os_mutex_lock(s_cv_mtx, EK_OS_FOREVER);
+    while (!s_cv_ready)
+    {
+        err = ek_os_condvar_wait(s_cv, s_cv_mtx, EK_OS_FOREVER);
+        if (err != 0) break;
+    }
+    s_cv_wait_err[id] = err;
+    if (err == 0)
+    {
+        s_cv_wake_cnt++;
+    }
+    s_cv_unlock_err[id] = ek_os_mutex_unlock(s_cv_mtx);
+    return NULL;
+}
+
+static void *_cv_cancel_waiter(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_cv_mtx, EK_OS_FOREVER);
+    s_cv_wait_err[0] = ek_os_condvar_wait(s_cv, s_cv_mtx, EK_OS_FOREVER);
+    s_cv_unlock_err[0] = ek_os_mutex_unlock(s_cv_mtx);
+    return NULL;
+}
+
+/* 条件变量用例：参数边界、超时重持锁、signal 优先级唤醒、broadcast、destroy 取消、静态创建 */
+static void _condvar_test(void)
+{
+    /* 参数边界与前置条件 */
+    OS_CHECK(ek_os_condvar_wait(NULL, NULL, 0) == -ENOENT, "condvar wait(NULL, NULL) returns -ENOENT");
+    OS_CHECK(ek_os_condvar_signal(NULL) == -ENOENT, "condvar signal(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_condvar_broadcast(NULL) == -ENOENT, "condvar broadcast(NULL) returns -ENOENT");
+
+    s_cv = ek_os_condvar_create();
+    s_cv_mtx = ek_os_mutex_create();
+    OS_CHECK(s_cv != NULL && s_cv_mtx != NULL, "condvar and mutex create");
+    if (!s_cv || !s_cv_mtx)
+    {
+        if (s_cv)
+        {
+            ek_os_condvar_destroy(s_cv);
+            s_cv = NULL;
+        }
+        if (s_cv_mtx)
+        {
+            ek_os_mutex_destroy(s_cv_mtx);
+            s_cv_mtx = NULL;
+        }
+        s_done = true;
+        return;
+    }
+
+    OS_CHECK(ek_os_condvar_wait(s_cv, NULL, 0) == -ENOENT, "condvar wait with NULL mutex returns -ENOENT");
+    OS_CHECK(ek_os_condvar_wait(NULL, s_cv_mtx, 0) == -ENOENT, "condvar wait with NULL condvar returns -ENOENT");
+    OS_CHECK(ek_os_condvar_wait(s_cv, s_cv_mtx, 1000) == -EPERM, "condvar wait without holding mutex returns -EPERM");
+
+    OS_CHECK(ek_os_mutex_lock(s_cv_mtx, 0) == 0, "lock mutex for zero timeout wait");
+    OS_CHECK(ek_os_condvar_wait(s_cv, s_cv_mtx, 0) == -ETIMEDOUT, "condvar wait(0) returns -ETIMEDOUT");
+    OS_CHECK(ek_os_mutex_unlock(s_cv_mtx) == 0, "mutex remains held after wait(0)");
+
+    OS_CHECK(ek_os_mutex_lock(s_cv_mtx, 0) == 0, "lock mutex level 1");
+    OS_CHECK(ek_os_mutex_lock(s_cv_mtx, 0) == 0, "lock mutex level 2");
+    OS_CHECK(ek_os_condvar_wait(s_cv, s_cv_mtx, 1000) == -EDEADLK, "condvar wait with nested mutex returns -EDEADLK");
+    OS_CHECK(ek_os_mutex_unlock(s_cv_mtx) == 0, "unlock mutex level 2");
+    OS_CHECK(ek_os_mutex_unlock(s_cv_mtx) == 0, "unlock mutex level 1");
+
+    /* 无等待者时不记忆信号，超时后仍重新持有互斥量 */
+    OS_CHECK(ek_os_condvar_signal(s_cv) == 0, "signal with no waiters returns 0");
+    OS_CHECK(ek_os_condvar_broadcast(s_cv) == 0, "broadcast with no waiters returns 0");
+
+    OS_CHECK(ek_os_mutex_lock(s_cv_mtx, 0) == 0, "lock mutex for timeout wait");
+    uint64_t t0 = ek_os_kernel_time();
+    int err = ek_os_condvar_wait(s_cv, s_cv_mtx, 5000);
+    uint64_t t1 = ek_os_kernel_time();
+    OS_CHECK(err == -ETIMEDOUT, "condvar timed wait returns -ETIMEDOUT");
+    OS_CHECK((t1 - t0) >= 4000ULL, "condvar timed wait lasts >= 4 ms");
+    OS_CHECK(ek_os_mutex_unlock(s_cv_mtx) == 0, "mutex re-acquired after timed wait");
+
+    /* 单唤醒 signal：每次只唤醒一个，且按优先级高者先醒 */
+    s_cv_ready = false;
+    s_cv_wake_cnt = 0;
+    for (int i = 0; i < 4; i++)
+    {
+        s_cv_order[i] = -1;
+        s_cv_wait_err[i] = -1;
+        s_cv_unlock_err[i] = -1;
+    }
+
+    int sig_low_tid = ek_os_thread_create("cv_sig_l", _cv_signal_waiter, (void *)(intptr_t)0, PRIO_LOW, TEST_STACK);
+    int sig_high_tid = ek_os_thread_create("cv_sig_h", _cv_signal_waiter, (void *)(intptr_t)1, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(5000);
+
+    OS_CHECK(s_cv_wake_cnt == 0, "signal waiters blocked before signal");
+    OS_CHECK(ek_os_mutex_lock(s_cv_mtx, 0) == 0, "condvar wait released mutex atomically");
+    s_cv_ready = true;
+    OS_CHECK(ek_os_mutex_unlock(s_cv_mtx) == 0, "unlock mutex before signal");
+
+    OS_CHECK(ek_os_condvar_signal(s_cv) == 0, "signal first waiter");
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_cv_wake_cnt == 1, "signal wakes exactly one waiter");
+    OS_CHECK(s_cv_order[0] == 1, "signal wakes highest priority waiter first");
+
+    OS_CHECK(ek_os_condvar_signal(s_cv) == 0, "signal second waiter");
+    OS_CHECK(ek_os_thread_join(sig_high_tid, -1, NULL) == 0, "join signal high waiter");
+    OS_CHECK(ek_os_thread_join(sig_low_tid, -1, NULL) == 0, "join signal low waiter");
+    OS_CHECK(s_cv_wake_cnt == 2 && s_cv_order[1] == 0, "second signal wakes remaining waiter");
+    OS_CHECK(s_cv_wait_err[0] == 0 && s_cv_wait_err[1] == 0, "signal waiters return 0");
+    OS_CHECK(s_cv_unlock_err[0] == 0 && s_cv_unlock_err[1] == 0, "signal waiters re-acquired mutex");
+
+    /* 广播唤醒 broadcast：一次唤醒所有等待者 */
+    s_cv_ready = false;
+    s_cv_wake_cnt = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        s_cv_wait_err[i] = -1;
+        s_cv_unlock_err[i] = -1;
+    }
+
+    int bc_tid0 = ek_os_thread_create("cv_bc0", _cv_broadcast_waiter, (void *)(intptr_t)0, PRIO_MID, TEST_STACK);
+    int bc_tid1 = ek_os_thread_create("cv_bc1", _cv_broadcast_waiter, (void *)(intptr_t)1, PRIO_LOW, TEST_STACK);
+    int bc_tid2 = ek_os_thread_create("cv_bc2", _cv_broadcast_waiter, (void *)(intptr_t)2, PRIO_LOW, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_cv_wake_cnt == 0, "broadcast waiters blocked before broadcast");
+
+    OS_CHECK(ek_os_mutex_lock(s_cv_mtx, 0) == 0, "lock mutex before broadcast");
+    s_cv_ready = true;
+    OS_CHECK(ek_os_mutex_unlock(s_cv_mtx) == 0, "unlock mutex before broadcast");
+    OS_CHECK(ek_os_condvar_broadcast(s_cv) == 0, "broadcast wakes all waiters");
+
+    OS_CHECK(ek_os_thread_join(bc_tid0, -1, NULL) == 0, "join broadcast waiter 0");
+    OS_CHECK(ek_os_thread_join(bc_tid1, -1, NULL) == 0, "join broadcast waiter 1");
+    OS_CHECK(ek_os_thread_join(bc_tid2, -1, NULL) == 0, "join broadcast waiter 2");
+    OS_CHECK(s_cv_wake_cnt == 3, "all 3 broadcast waiters woken");
+    OS_CHECK(s_cv_wait_err[0] == 0 && s_cv_wait_err[1] == 0 && s_cv_wait_err[2] == 0, "broadcast waiters return 0");
+    OS_CHECK(s_cv_unlock_err[0] == 0 && s_cv_unlock_err[1] == 0 && s_cv_unlock_err[2] == 0,
+             "broadcast waiters re-acquired mutex");
+
+    /* destroy 唤醒等待者返回 -ECANCELED 且仍重持锁 */
+    s_cv_wait_err[0] = 1;
+    s_cv_unlock_err[0] = 1;
+    int cancel_tid = ek_os_thread_create("cv_cancel", _cv_cancel_waiter, NULL, PRIO_LOW, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_cv_wait_err[0] == 1, "cancel waiter still blocked on condvar");
+
+    ek_os_condvar_destroy(s_cv);
+    s_cv = NULL;
+
+    OS_CHECK(ek_os_thread_join(cancel_tid, -1, NULL) == 0, "join cancelled condvar waiter");
+    OS_CHECK(s_cv_wait_err[0] == -ECANCELED, "destroy wakes condvar waiter with -ECANCELED");
+    OS_CHECK(s_cv_unlock_err[0] == 0, "cancelled waiter re-acquired mutex");
+
+    ek_os_mutex_destroy(s_cv_mtx);
+    s_cv_mtx = NULL;
+
+    /* 静态创建边界与销毁后拒绝访问 */
+    OS_CHECK(ek_os_condvar_create_static(NULL, sizeof(s_static_cv_mem.buf)) == NULL,
+             "condvar create_static(NULL) returns NULL");
+    OS_CHECK(ek_os_condvar_create_static(s_static_cv_mem.buf, EK_OS_CONDVAR_STATIC_BUF_SIZE - 1U) == NULL,
+             "condvar create_static undersized returns NULL");
+
+    _Alignas(ek_os_condvar_t) uint8_t unaligned_buf[EK_OS_CONDVAR_STATIC_BUF_SIZE + sizeof(void *)];
+    OS_CHECK(ek_os_condvar_create_static(unaligned_buf + 1U, EK_OS_CONDVAR_STATIC_BUF_SIZE) == NULL,
+             "condvar create_static unaligned returns NULL");
+
+    ek_os_condvar_t *st_cv = ek_os_condvar_create_static(s_static_cv_mem.buf, sizeof(s_static_cv_mem.buf));
+    OS_CHECK(st_cv != NULL, "condvar create_static");
+    if (st_cv)
+    {
+        OS_CHECK(ek_os_condvar_signal(st_cv) == 0, "signal static condvar");
+        OS_CHECK(ek_os_condvar_broadcast(st_cv) == 0, "broadcast static condvar");
+        ek_os_condvar_destroy(st_cv);
+        OS_CHECK(ek_os_condvar_signal(st_cv) == -ENOENT, "destroyed static condvar rejects signal");
+        OS_CHECK(ek_os_condvar_broadcast(st_cv) == -ENOENT, "destroyed static condvar rejects broadcast");
+    }
+
+    EK_LOG_INFO("condvar_test finished: %s", s_done ? "FAILED" : "ALL PASS");
+}
+
+static void *_condvar_main(void *arg)
+{
+    (void)arg;
+    _condvar_test();
+    return NULL;
+}
+
 static void *_test_main(void *arg)
 {
     (void)arg;
@@ -596,6 +820,9 @@ static void *_test_main(void *arg)
 
     int msgq_tid = ek_os_thread_create("msgq_main", _msgq_main, NULL, PRIO_TEST, 1536);
     OS_CHECK(ek_os_thread_join(msgq_tid, -1, NULL) == 0, "join msgq test thread");
+
+    int cv_tid = ek_os_thread_create("cv_main", _condvar_main, NULL, PRIO_TEST, 1536);
+    OS_CHECK(ek_os_thread_join(cv_tid, -1, NULL) == 0, "join condvar test thread");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
