@@ -1,12 +1,13 @@
 /**
  * @file test_os.c
- * @brief RTOS 内核自检：sleep 精度、信号量、互斥量、消息队列、条件变量、优先级抢占、调度器锁
+ * @brief RTOS 内核自检：sleep 精度、信号量、互斥量、消息队列、条件变量、屏障、优先级抢占、调度器锁
  */
 
 #include "test.h"
 
 #if EKCFG_RTOS == 1
 
+#    include "ek/os/barrier.h"
 #    include "ek/os/condvar.h"
 #    include "ek/os/kernel.h"
 #    include "ek/os/msgq.h"
@@ -797,6 +798,190 @@ static void *_condvar_main(void *arg)
     return NULL;
 }
 
+/* ---------------- 屏障自检 ---------------- */
+
+static ek_os_barrier_t *s_bar;
+static volatile int s_bar_entered[3];
+static volatile int s_bar_passed[3];
+static volatile int s_bar_cycle_err[2][3];
+static volatile int s_bar_single_err;
+
+static union
+{
+    ek_os_barrier_t align;
+    uint8_t buf[EK_OS_BARRIER_STATIC_BUF_SIZE];
+} s_static_bar_mem;
+
+#if EKCFG_STATIC_ALLOC == 1
+EK_DEFINE_OS_BARRIER(s_def_bar, 2U);
+#endif
+
+static void *_bar_cycle_worker(void *arg)
+{
+    int idx = (int)(intptr_t)arg;
+    for (int r = 0; r < 3; r++)
+    {
+        s_bar_entered[r]++;
+        int err = ek_os_barrier_wait(s_bar, EK_OS_FOREVER);
+        s_bar_cycle_err[idx][r] = err;
+        if (err == 0) s_bar_passed[r]++;
+    }
+    return NULL;
+}
+
+static void *_bar_single_waiter(void *arg)
+{
+    ek_os_barrier_t *bar = (ek_os_barrier_t *)arg;
+    s_bar_single_err = ek_os_barrier_wait(bar, EK_OS_FOREVER);
+    return NULL;
+}
+
+static void _barrier_test(void)
+{
+    /* 参数边界 */
+    OS_CHECK(ek_os_barrier_create(0U) == NULL, "barrier create(0) returns NULL");
+    OS_CHECK(ek_os_barrier_wait(NULL, 0) == -ENOENT, "barrier wait(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_barrier_reset(NULL, 2U) == -ENOENT, "barrier reset(NULL) returns -ENOENT");
+
+    /* 单线程 expected == 1 与周期复用 */
+    ek_os_barrier_t *b1 = ek_os_barrier_create(1U);
+    OS_CHECK(b1 != NULL, "barrier create(1)");
+    if (b1)
+    {
+        for (int r = 0; r < 3; r++)
+        {
+            OS_CHECK(ek_os_barrier_wait(b1, 0) == 0, "barrier expected=1 wait(0) succeeds repeatedly");
+        }
+        ek_os_barrier_destroy(b1);
+    }
+
+    /* 多线程 3 线程 x 3 轮周期同步 + 等待中 reset 返回 -EBUSY */
+    s_bar = ek_os_barrier_create(3U);
+    OS_CHECK(s_bar != NULL, "barrier create(3)");
+    if (!s_bar)
+    {
+        s_done = true;
+        return;
+    }
+
+    for (int r = 0; r < 3; r++)
+    {
+        s_bar_entered[r] = 0;
+        s_bar_passed[r] = 0;
+        s_bar_cycle_err[0][r] = -1;
+        s_bar_cycle_err[1][r] = -1;
+    }
+
+    int w0 = ek_os_thread_create("bar_w0", _bar_cycle_worker, (void *)(intptr_t)0, PRIO_MID, TEST_STACK);
+    int w1 = ek_os_thread_create("bar_w1", _bar_cycle_worker, (void *)(intptr_t)1, PRIO_MID, TEST_STACK);
+
+    for (int r = 0; r < 3; r++)
+    {
+        ek_os_thread_sleep(5000);
+        OS_CHECK(s_bar_entered[r] == 2 && s_bar_passed[r] == 0, "two workers blocked at barrier round");
+        if (r == 0)
+        {
+            OS_CHECK(ek_os_barrier_reset(s_bar, 2U) == -EBUSY, "reset while waiting returns -EBUSY");
+        }
+        OS_CHECK(ek_os_barrier_wait(s_bar, 0) == 0, "last arrival with timeout=0 releases all");
+        if (r == 2)
+        {
+            ek_os_thread_sleep(5000);
+        }
+    }
+
+    OS_CHECK(ek_os_thread_join(w0, -1, NULL) == 0, "join barrier cycle worker 0");
+    OS_CHECK(ek_os_thread_join(w1, -1, NULL) == 0, "join barrier cycle worker 1");
+
+    for (int r = 0; r < 3; r++)
+    {
+        OS_CHECK(s_bar_passed[r] == 2 && s_bar_cycle_err[0][r] == 0 && s_bar_cycle_err[1][r] == 0,
+                 "barrier cycle round released both workers with 0");
+    }
+    OS_CHECK(s_bar->count == 0U, "barrier count reset to 0 after cycles");
+
+    /* 非阻塞 -EAGAIN、超时 -ETIMEDOUT、count 自动回滚及 reset */
+    OS_CHECK(ek_os_barrier_wait(s_bar, 0) == -EAGAIN, "non-blocking wait not full returns -EAGAIN");
+    OS_CHECK(s_bar->count == 0U, "barrier count unchanged after -EAGAIN");
+
+    uint64_t t0 = ek_os_kernel_time();
+    int terr = ek_os_barrier_wait(s_bar, 5000);
+    uint64_t t1 = ek_os_kernel_time();
+    OS_CHECK(terr == -ETIMEDOUT, "timed wait returns -ETIMEDOUT");
+    OS_CHECK((t1 - t0) >= 4000ULL, "barrier timed wait lasts >= 4 ms");
+    OS_CHECK(s_bar->count == 0U, "barrier count rolled back after -ETIMEDOUT");
+    OS_CHECK(ek_os_barrier_reset(s_bar, 0U) == -EINVAL, "reset(0) returns -EINVAL");
+    OS_CHECK(ek_os_barrier_reset(s_bar, 2U) == 0, "reset(2) succeeds when idle");
+
+    /* 等待期间被 suspend 打断返回 -EINTR 与 count 回滚 */
+    s_bar_single_err = 1;
+    int susp_tid = ek_os_thread_create("bar_susp", _bar_single_waiter, s_bar, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_bar_single_err == 1, "waiter blocked before suspend");
+    OS_CHECK(ek_os_thread_suspend(susp_tid) == 0, "suspend barrier waiter");
+    OS_CHECK(ek_os_thread_resume(susp_tid) == 0, "resume suspended barrier waiter");
+    OS_CHECK(ek_os_thread_join(susp_tid, -1, NULL) == 0, "join suspended barrier waiter");
+    OS_CHECK(s_bar_single_err == -EINTR, "suspended barrier waiter returns -EINTR");
+    OS_CHECK(s_bar->count == 0U, "barrier count rolled back after -EINTR");
+    OS_CHECK(ek_os_barrier_wait(s_bar, 0) == -EAGAIN, "barrier still requires 2 threads after -EINTR rollback");
+
+    /* destroy 唤醒等待者返回 -ECANCELED */
+    s_bar_single_err = 1;
+    int cancel_tid = ek_os_thread_create("bar_cancel", _bar_single_waiter, s_bar, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_bar_single_err == 1, "waiter blocked before barrier destroy");
+    ek_os_barrier_destroy(s_bar);
+    s_bar = NULL;
+    OS_CHECK(ek_os_thread_join(cancel_tid, -1, NULL) == 0, "join cancelled barrier waiter");
+    OS_CHECK(s_bar_single_err == -ECANCELED, "destroy wakes barrier waiter with -ECANCELED");
+
+    /* 静态缓冲区创建边界与销毁后拒绝访问 */
+    OS_CHECK(ek_os_barrier_create_static(NULL, sizeof(s_static_bar_mem.buf), 1U) == NULL,
+             "barrier create_static(NULL) returns NULL");
+    OS_CHECK(ek_os_barrier_create_static(s_static_bar_mem.buf, EK_OS_BARRIER_STATIC_BUF_SIZE - 1U, 1U) == NULL,
+             "barrier create_static undersized returns NULL");
+
+    _Alignas(ek_os_barrier_t) uint8_t unaligned_bar_buf[EK_OS_BARRIER_STATIC_BUF_SIZE + sizeof(void *)];
+    OS_CHECK(ek_os_barrier_create_static(unaligned_bar_buf + 1U, EK_OS_BARRIER_STATIC_BUF_SIZE, 1U) == NULL,
+             "barrier create_static unaligned returns NULL");
+    OS_CHECK(ek_os_barrier_create_static(s_static_bar_mem.buf, sizeof(s_static_bar_mem.buf), 0U) == NULL,
+             "barrier create_static(0) returns NULL");
+
+    ek_os_barrier_t *st_bar = ek_os_barrier_create_static(s_static_bar_mem.buf, sizeof(s_static_bar_mem.buf), 1U);
+    OS_CHECK(st_bar != NULL, "barrier create_static");
+    if (st_bar)
+    {
+        OS_CHECK(ek_os_barrier_wait(st_bar, 0) == 0, "wait static barrier(1)");
+        OS_CHECK(ek_os_barrier_reset(st_bar, 2U) == 0, "reset static barrier");
+        ek_os_barrier_destroy(st_bar);
+        OS_CHECK(ek_os_barrier_wait(st_bar, 0) == -ENOENT, "destroyed static barrier rejects wait");
+        OS_CHECK(ek_os_barrier_reset(st_bar, 1U) == -ENOENT, "destroyed static barrier rejects reset");
+    }
+
+#if EKCFG_STATIC_ALLOC == 1
+    /* EK_DEFINE_OS_BARRIER 自动注册验证 */
+    OS_CHECK(s_def_bar != NULL, "EK_DEFINE_OS_BARRIER initialized");
+    if (s_def_bar)
+    {
+        s_bar_single_err = 1;
+        int def_tid = ek_os_thread_create("bar_def", _bar_single_waiter, s_def_bar, PRIO_MID, TEST_STACK);
+        ek_os_thread_sleep(5000);
+        OS_CHECK(ek_os_barrier_wait(s_def_bar, 0) == 0, "wait EK_DEFINE_OS_BARRIER releases waiter");
+        OS_CHECK(ek_os_thread_join(def_tid, -1, NULL) == 0, "join EK_DEFINE_OS_BARRIER waiter");
+        OS_CHECK(s_bar_single_err == 0, "EK_DEFINE_OS_BARRIER waiter returns 0");
+    }
+#endif
+
+    EK_LOG_INFO("barrier_test finished: %s", s_done ? "FAILED" : "ALL PASS");
+}
+
+static void *_barrier_main(void *arg)
+{
+    (void)arg;
+    _barrier_test();
+    return NULL;
+}
+
 static void *_test_main(void *arg)
 {
     (void)arg;
@@ -869,6 +1054,9 @@ static void *_test_main(void *arg)
 
     int cv_tid = ek_os_thread_create("cv_main", _condvar_main, NULL, PRIO_TEST, 1536);
     OS_CHECK(ek_os_thread_join(cv_tid, -1, NULL) == 0, "join condvar test thread");
+
+    int bar_tid = ek_os_thread_create("bar_main", _barrier_main, NULL, PRIO_TEST, 1536);
+    OS_CHECK(ek_os_thread_join(bar_tid, -1, NULL) == 0, "join barrier test thread");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
