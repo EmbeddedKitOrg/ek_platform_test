@@ -217,6 +217,26 @@ static void *_chain_high(void *arg)
     return NULL;
 }
 
+static volatile int s_susp_waiter_err;
+
+/* 挂起等待者时持有者继承优先级回落测试 */
+static void *_susp_holder(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+    ek_os_thread_sleep(40000);
+    ek_os_mutex_unlock(s_mtx);
+    return NULL;
+}
+
+static void *_susp_waiter(void *arg)
+{
+    (void)arg;
+    s_susp_waiter_err = ek_os_mutex_lock(s_mtx, EK_OS_FOREVER);
+    if (s_susp_waiter_err == 0) ek_os_mutex_unlock(s_mtx);
+    return NULL;
+}
+
 /* 互斥量用例：基础加锁、重入、跨线程竞争、优先级继承、销毁、持锁退出、静态创建 */
 static void _mutex_test(void)
 {
@@ -348,6 +368,32 @@ static void _mutex_test(void)
         ek_os_mutex_destroy(s_mtx_b);
         s_mtx_a = NULL;
         s_mtx_b = NULL;
+    }
+
+    /* 挂起等待锁的高优先级线程时，原持锁者的继承优先级应立即回落 */
+    s_mtx = ek_os_mutex_create();
+    OS_CHECK(s_mtx != NULL, "mutex create for suspend inheritance restore");
+    if (s_mtx)
+    {
+        int susp_low = ek_os_thread_create("susp_low", _susp_holder, NULL, PRIO_LOW, TEST_STACK);
+        ek_os_thread_sleep(5000);
+        s_susp_waiter_err = 1;
+        int susp_high = ek_os_thread_create("susp_high", _susp_waiter, NULL, PRIO_HIGH, TEST_STACK);
+        ek_os_thread_sleep(5000);
+
+        uint8_t p = 0;
+        OS_CHECK(ek_os_thread_get_prio(susp_low, &p) == 0 && p == PRIO_HIGH,
+                 "owner inherits waiter prio before suspend");
+        OS_CHECK(ek_os_thread_suspend(susp_high) == 0, "suspend mutex waiter");
+        OS_CHECK(ek_os_thread_get_prio(susp_low, &p) == 0 && p == PRIO_LOW,
+                 "owner priority restored after waiter suspended");
+        OS_CHECK(ek_os_thread_resume(susp_high) == 0, "resume suspended waiter");
+        OS_CHECK(ek_os_thread_join(susp_high, -1, NULL) == 0, "join suspended waiter");
+        OS_CHECK(s_susp_waiter_err == -EINTR, "suspended waiter returns -EINTR");
+        OS_CHECK(ek_os_thread_join(susp_low, -1, NULL) == 0, "join suspend holder");
+
+        ek_os_mutex_destroy(s_mtx);
+        s_mtx = NULL;
     }
 
     /* ---- 12. 静态缓冲区创建与销毁失效 ---- */
