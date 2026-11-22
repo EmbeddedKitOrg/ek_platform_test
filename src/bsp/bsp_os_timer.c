@@ -4,8 +4,7 @@
  *
  * 自由时间源按下面顺序选择，运行期自动探测：
  *   1. DWT->CYCCNT（真机，CPU 周期计数，软件扩展为 64 位后换算成微秒）；
- *   2. 探测失败（如 Renode 不模拟 CYCCNT）时回退到 TIMER4 自由运行，
- *      1 MHz 计数、32 位量程，计数即微秒。
+ *   2. 探测失败（如 Renode 不模拟 CYCCNT）时回退到 SysTick 1 ms 节拍。
  *
  * 单次闹钟固定使用 TIMER5：单脉冲模式、1 MHz（1 tick = 1 us），
  * 到期中断中调用 ek_os_kernel_announce_isr()。
@@ -72,6 +71,7 @@ static bool _dwt_probe(void)
 
 static void _systick_handler(void)
 {
+    if (s_use_dwt) return;
     s_systick_ms++;
     ek_os_kernel_announce_isr();
 }
@@ -140,10 +140,15 @@ EK_DEFINE_ARCH_IRQ(OS_ALARM_IRQ, _os_timer_irq_handler);
 
 static void _os_timer_init(void)
 {
-    /* 自由时间源：优先 DWT，不可用则回退 TIMER4 */
+    /* 自由时间源：优先 DWT，不可用则回退 SysTick 1 ms 节拍 */
     s_use_dwt = _dwt_probe();
     if (s_use_dwt)
     {
+        /* 停用启动阶段开启的 SysTick，避免 Tickless 模式下每 1 ms 多余唤醒内核 */
+        SysTick->CTRL = 0U;
+        SysTick->VAL = 0U;
+        SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+
         DWT->CYCCNT = 0U;
         s_last_cnt = DWT->CYCCNT;
         s_cnt_base = 0U;
