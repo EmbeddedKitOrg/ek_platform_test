@@ -88,20 +88,20 @@ static uint64_t _os_now_us(void)
 {
     if (!s_use_dwt)
     {
-        uint32_t flags = ek_os_kernel_spin_lock();
+        uint32_t flags = ek_arch_irq_lock();
         uint64_t us = (uint64_t)s_systick_ms * 1000ULL;
-        ek_os_kernel_spin_unlock(flags);
+        ek_arch_irq_unlock(flags);
         return us;
     }
 
-    uint32_t flags = ek_os_kernel_spin_lock();
+    uint32_t flags = ek_arch_irq_lock();
 
     uint32_t cnt = DWT->CYCCNT;
     if (cnt < s_last_cnt) s_cnt_base += (1ULL << 32); /* 32 位 CYCCNT 回绕 */
     s_last_cnt = cnt;
     uint64_t cycles = s_cnt_base + cnt;
 
-    ek_os_kernel_spin_unlock(flags);
+    ek_arch_irq_unlock(flags);
 
     return cycles / _cycles_per_us();
 }
