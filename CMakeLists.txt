@@ -18,8 +18,51 @@ set(INC_DIRS
 # 收集源文件
 file(GLOB_RECURSE SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 
+set(EK_BENCH_TM "OFF" CACHE STRING "Thread-Metric benchmark case: OFF|basic|cooperative|preemptive|interrupt|interrupt_preemption|message|synchronization|memory")
+set(EK_BENCH_TM_DURATION "30" CACHE STRING "Thread-Metric report interval in seconds")
+
 # 创建可执行文件目标
 add_executable(${CMAKE_PROJECT_NAME} ${SRCS})
+
+# 按需接入 Thread-Metric 基准测试
+if(NOT EK_BENCH_TM STREQUAL "OFF")
+    set(_tm_dir "${CMAKE_CURRENT_SOURCE_DIR}/bench/thread_metric")
+    set(_tm_vendor "${_tm_dir}/vendor")
+    if(EK_BENCH_TM STREQUAL "basic")
+        set(_tm_test "${_tm_vendor}/tm_basic_processing_test.c")
+    elseif(EK_BENCH_TM STREQUAL "cooperative")
+        set(_tm_test "${_tm_vendor}/tm_cooperative_scheduling_test.c")
+    elseif(EK_BENCH_TM STREQUAL "preemptive")
+        set(_tm_test "${_tm_vendor}/tm_preemptive_scheduling_test.c")
+    elseif(EK_BENCH_TM STREQUAL "interrupt")
+        set(_tm_test "${_tm_vendor}/tm_interrupt_processing_test.c")
+        target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TM_BENCH_CASE_INTERRUPT=1)
+    elseif(EK_BENCH_TM STREQUAL "interrupt_preemption")
+        set(_tm_test "${_tm_vendor}/tm_interrupt_preemption_processing_test.c")
+        target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TM_BENCH_CASE_INTERRUPT_PREEMPTION=1)
+    elseif(EK_BENCH_TM STREQUAL "message")
+        set(_tm_test "${_tm_vendor}/tm_message_processing_test.c")
+    elseif(EK_BENCH_TM STREQUAL "synchronization")
+        set(_tm_test "${_tm_vendor}/tm_synchronization_processing_test.c")
+    elseif(EK_BENCH_TM STREQUAL "memory")
+        set(_tm_test "${_tm_vendor}/tm_memory_allocation_test.c")
+    else()
+        message(FATAL_ERROR "Unknown EK_BENCH_TM='${EK_BENCH_TM}'. Expected: OFF|basic|cooperative|preemptive|interrupt|interrupt_preemption|message|synchronization|memory")
+    endif()
+
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        "${_tm_dir}/tm_porting_layer.c"
+        "${_tm_test}"
+    )
+    list(APPEND INC_DIRS "${_tm_dir}" "${_tm_vendor}")
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+        EK_RUN_THREAD_METRIC=1
+        TM_TEST_DURATION=${EK_BENCH_TM_DURATION}
+    )
+    set_source_files_properties("${_tm_test}" PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-variable;-Wno-unused-but-set-variable;-Wno-strict-prototypes;-Wno-sign-compare"
+    )
+endif()
 
 # ek_platform 子模块
 ek_platform_configure(

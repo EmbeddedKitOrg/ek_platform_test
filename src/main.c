@@ -49,9 +49,15 @@ int main(void)
             "pendsv vec=0x%08lx want=0x%08lx", (unsigned long)vt[14], (unsigned long)(uintptr_t)ek_arch_switch_thread);
     }
 
+#    if defined(EK_RUN_THREAD_METRIC)
+    extern void tm_main(void);
+    EK_LOG_INFO("main: starting Thread-Metric benchmark");
+    tm_main();
+#    else
     os_test(); /* 创建自检线程，内核启动后才开始运行 */
     EK_LOG_INFO("main: os_test done, starting kernel");
     ek_os_kernel_start(&g_bsp_os_timer_ops);
+#    endif
     EK_LOG_ERROR("main: kernel start returned unexpectedly");
 #endif
 
@@ -64,6 +70,14 @@ int ek_port_io_fputc(int ch)
 {
     bsp_uart_send_data(ch);
     return ch;
+}
+
+uint32_t ek_port_log_get_tick(void)
+{
+#if EKCFG_RTOS == 1
+    return (uint32_t)(ek_os_kernel_time() / 1000UL);
+#endif
+    return 0;
 }
 
 static void _restore_clock_to_240m(void)
