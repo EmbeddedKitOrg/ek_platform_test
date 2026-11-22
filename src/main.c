@@ -53,6 +53,10 @@ int main(void)
     extern void tm_main(void);
     EK_LOG_INFO("main: starting Thread-Metric benchmark");
     tm_main();
+#    elif defined(EK_RUN_LATENCY_MEASURE)
+    extern void lm_main(void);
+    EK_LOG_INFO("main: starting latency_measure benchmark");
+    lm_main();
 #    else
     os_test(); /* 创建自检线程，内核启动后才开始运行 */
     EK_LOG_INFO("main: os_test done, starting kernel");

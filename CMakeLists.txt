@@ -20,9 +20,29 @@ file(GLOB_RECURSE SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 
 set(EK_BENCH_TM "OFF" CACHE STRING "Thread-Metric benchmark case: OFF|basic|cooperative|preemptive|interrupt|interrupt_preemption|message|synchronization|memory")
 set(EK_BENCH_TM_DURATION "30" CACHE STRING "Thread-Metric report interval in seconds")
+set(EK_BENCH_LM "OFF" CACHE BOOL "Build Zephyr-style latency_measure micro-benchmark")
+set(EK_BENCH_LM_ITERS "1000" CACHE STRING "Default iteration count for latency_measure")
+
+if(NOT EK_BENCH_TM STREQUAL "OFF" AND EK_BENCH_LM)
+    message(FATAL_ERROR "EK_BENCH_TM and EK_BENCH_LM cannot be enabled simultaneously")
+endif()
 
 # 创建可执行文件目标
 add_executable(${CMAKE_PROJECT_NAME} ${SRCS})
+
+# 按需接入 latency_measure 微基准测试
+if(EK_BENCH_LM)
+    set(_lm_dir "${CMAKE_CURRENT_SOURCE_DIR}/bench/latency_measure")
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        "${_lm_dir}/lm_main.c"
+        "${_lm_dir}/lm_cases.c"
+    )
+    list(APPEND INC_DIRS "${_lm_dir}")
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+        EK_RUN_LATENCY_MEASURE=1
+        LM_BENCH_ITERS=${EK_BENCH_LM_ITERS}
+    )
+endif()
 
 # 按需接入 Thread-Metric 基准测试
 if(NOT EK_BENCH_TM STREQUAL "OFF")

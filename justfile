@@ -12,12 +12,12 @@ clean:
     rm -rf build
 
 build mode="Debug":
-    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE={{mode}} -DEK_BENCH_TM=OFF
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE={{mode}} -DEK_BENCH_TM=OFF -DEK_BENCH_LM=OFF
     ninja -C build
 
 # 构建 Thread-Metric 基准测试（case: basic|cooperative|preemptive|interrupt|interrupt_preemption|message|synchronization|memory）
 tm case="basic" mode="Release" duration="30":
-    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE={{mode}} -DEK_BENCH_TM={{case}} -DEK_BENCH_TM_DURATION={{duration}}
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE={{mode}} -DEK_BENCH_TM={{case}} -DEK_BENCH_TM_DURATION={{duration}} -DEK_BENCH_LM=OFF
     ninja -C build
 
 tm-flash case="basic" mode="Release" duration="30": (tm case mode duration)
@@ -31,6 +31,20 @@ tm-run case="basic" mode="Release" duration="30": (tm-flash case mode duration)
 
 tm-sim case="basic" mode="Release" duration="5": (tm case mode duration)
     renode --plain --disable-gui -P -1 --hide-log scripts/renode/run_term.resc
+
+# 构建并运行 Zephyr latency_measure 风格微基准（iters: 单项采样次数）
+lm mode="RelWithDebInfo" iters="1000":
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE={{mode}} -DEK_BENCH_TM=OFF -DEK_BENCH_LM=ON -DEK_BENCH_LM_ITERS={{iters}}
+    ninja -C build
+
+lm-flash mode="RelWithDebInfo" iters="1000": (lm mode iters)
+    probe-rs download --speed 4000 --chip GD32F470ZG ./build/main.elf
+    probe-rs reset --chip GD32F470ZG
+
+lm-run mode="RelWithDebInfo" iters="1000": (lm-flash mode iters)
+    clear
+    probe-rs reset --chip GD32F470ZG
+    tio -b 115200 /dev/ttyACM0
 
 flash:build
     probe-rs download --speed 4000 --chip GD32F470ZG ./build/main.elf
