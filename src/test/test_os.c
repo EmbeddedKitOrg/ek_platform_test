@@ -1,6 +1,6 @@
 /**
  * @file test_os.c
- * @brief RTOS 内核自检：sleep 精度、信号量、互斥量、消息队列、条件变量、屏障、优先级抢占、调度器锁
+ * @brief RTOS 内核自检：sleep 精度、信号量、互斥量、消息队列、条件变量、屏障、侵入式 FIFO、优先级抢占、调度器锁
  */
 
 #include "test.h"
@@ -10,6 +10,7 @@
 #    include "ek/os/barrier.h"
 #    include "ek/os/condvar.h"
 #    include "ek/os/kernel.h"
+#    include "ek/os/kfifo.h"
 #    include "ek/os/msgq.h"
 #    include "ek/os/mutex.h"
 #    include "ek/os/sem.h"
@@ -982,6 +983,210 @@ static void *_barrier_main(void *arg)
     return NULL;
 }
 
+/* ---------------- 侵入式 FIFO 自检 ---------------- */
+
+typedef struct
+{
+    ek_os_kfifo_node_t node;
+    uint32_t id;
+} kfifo_item_t;
+
+static ek_os_kfifo_t *s_kfifo;
+static kfifo_item_t s_kfifo_items[4];
+static volatile int s_kfifo_get_err[2];
+static void *volatile s_kfifo_got[2];
+static volatile int s_kfifo_wake_order[2];
+static volatile int s_kfifo_wake_idx;
+
+static union
+{
+    ek_os_kfifo_t align;
+    uint8_t buf[EK_OS_KFIFO_STATIC_BUF_SIZE];
+} s_static_kfifo_mem;
+
+#if EKCFG_STATIC_ALLOC == 1
+EK_DEFINE_OS_KFIFO(s_def_kfifo);
+#endif
+
+static void *_kfifo_waiter(void *arg)
+{
+    int idx = (int)(intptr_t)arg;
+    void *p = NULL;
+    s_kfifo_got[idx] = NULL;
+    int err = ek_os_kfifo_get(s_kfifo, &p, EK_OS_FOREVER);
+    s_kfifo_get_err[idx] = err;
+    if (err == 0)
+    {
+        s_kfifo_got[idx] = p;
+        s_kfifo_wake_order[s_kfifo_wake_idx++] = idx;
+    }
+    return NULL;
+}
+
+static void _kfifo_test(void)
+{
+    void *out = NULL;
+
+    /* 参数与无效句柄边界 */
+    OS_CHECK(ek_os_kfifo_is_empty(NULL), "kfifo is_empty(NULL) returns true");
+    OS_CHECK(ek_os_kfifo_put(NULL, &s_kfifo_items[0]) == -ENOENT, "kfifo put(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_kfifo_get(NULL, &out, 0) == -ENOENT, "kfifo get(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_kfifo_peek(NULL, &out) == -ENOENT, "kfifo peek(NULL) returns -ENOENT");
+
+    s_kfifo = ek_os_kfifo_create();
+    OS_CHECK(s_kfifo != NULL, "kfifo create");
+    if (!s_kfifo)
+    {
+        s_done = true;
+        return;
+    }
+
+    _Alignas(ek_os_kfifo_node_t) uint8_t unaligned_item[sizeof(kfifo_item_t) + sizeof(void *)];
+    OS_CHECK(ek_os_kfifo_put(s_kfifo, NULL) == -EINVAL, "kfifo put(NULL data) returns -EINVAL");
+    OS_CHECK(ek_os_kfifo_put(s_kfifo, unaligned_item + 1U) == -EINVAL, "kfifo put unaligned data returns -EINVAL");
+    OS_CHECK(ek_os_kfifo_get(s_kfifo, NULL, 0) == -EINVAL, "kfifo get(NULL out) returns -EINVAL");
+    OS_CHECK(ek_os_kfifo_peek(s_kfifo, NULL) == -EINVAL, "kfifo peek(NULL out) returns -EINVAL");
+
+    /* 空队列查询与超时 */
+    OS_CHECK(ek_os_kfifo_is_empty(s_kfifo), "kfifo starts empty");
+    OS_CHECK(ek_os_kfifo_peek(s_kfifo, &out) == -EAGAIN, "kfifo peek on empty returns -EAGAIN");
+    OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == -EAGAIN, "kfifo get(0) on empty returns -EAGAIN");
+
+    uint64_t t0 = ek_os_kernel_time();
+    int terr = ek_os_kfifo_get(s_kfifo, &out, 5000);
+    uint64_t t1 = ek_os_kernel_time();
+    OS_CHECK(terr == -ETIMEDOUT, "kfifo timed get returns -ETIMEDOUT");
+    OS_CHECK((t1 - t0) >= 4000ULL, "kfifo timed get lasts >= 4 ms");
+
+    /* FIFO 顺序、peek 只读、零拷贝地址一致及取空后二次入队 */
+    for (uint32_t i = 0; i < 4U; i++)
+    {
+        s_kfifo_items[i].node.next = (ek_os_kfifo_node_t *)(uintptr_t)0xDEADBEEFU;
+        s_kfifo_items[i].id = (i + 1U) * 10U;
+    }
+
+    for (uint32_t i = 0; i < 3U; i++)
+    {
+        OS_CHECK(ek_os_kfifo_put(s_kfifo, &s_kfifo_items[i]) == 0, "kfifo put item");
+    }
+
+    OS_CHECK(!ek_os_kfifo_is_empty(s_kfifo), "kfifo non-empty after put");
+    OS_CHECK(ek_os_kfifo_peek(s_kfifo, &out) == 0 && out == &s_kfifo_items[0], "kfifo peek returns head without pop");
+    OS_CHECK(ek_os_kfifo_peek(s_kfifo, &out) == 0 && out == &s_kfifo_items[0], "kfifo second peek still returns head");
+
+    for (uint32_t i = 0; i < 3U; i++)
+    {
+        out = NULL;
+        OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == 0 && out == &s_kfifo_items[i], "kfifo get returns exact item ptr");
+        kfifo_item_t *got = (kfifo_item_t *)out;
+        OS_CHECK(got->id == (i + 1U) * 10U && got->node.next == NULL, "kfifo item payload intact and next cleared");
+    }
+
+    OS_CHECK(ek_os_kfifo_is_empty(s_kfifo), "kfifo empty after popping all items");
+    OS_CHECK(ek_os_kfifo_peek(s_kfifo, &out) == -EAGAIN, "kfifo peek returns -EAGAIN after drained");
+    OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == -EAGAIN, "kfifo get(0) returns -EAGAIN after drained");
+
+    OS_CHECK(ek_os_kfifo_put(s_kfifo, &s_kfifo_items[3]) == 0, "kfifo put after drained");
+    OS_CHECK(s_kfifo_items[2].node.next == NULL, "previous tail node not corrupted on re-enqueue");
+    OS_CHECK(ek_os_kfifo_peek(s_kfifo, &out) == 0 && out == &s_kfifo_items[3], "kfifo peek sees re-enqueued item");
+    out = NULL;
+    OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == 0 && out == &s_kfifo_items[3] &&
+                 ((kfifo_item_t *)out)->id == 40U,
+             "kfifo get retrieves re-enqueued item");
+    OS_CHECK(ek_os_kfifo_is_empty(s_kfifo), "kfifo empty again after draining re-enqueued item");
+
+    /* 阻塞直达交接与优先级唤醒顺序 */
+    s_kfifo_get_err[0] = 1;
+    s_kfifo_get_err[1] = 1;
+    s_kfifo_got[0] = NULL;
+    s_kfifo_got[1] = NULL;
+    s_kfifo_wake_idx = 0;
+
+    int low_tid = ek_os_thread_create("kfifo_low", _kfifo_waiter, (void *)(intptr_t)0, PRIO_LOW, TEST_STACK);
+    int high_tid = ek_os_thread_create("kfifo_high", _kfifo_waiter, (void *)(intptr_t)1, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_kfifo_get_err[0] == 1 && s_kfifo_get_err[1] == 1, "both waiters blocked on empty kfifo");
+
+    OS_CHECK(ek_os_kfifo_put(s_kfifo, &s_kfifo_items[0]) == 0, "kfifo put handoffs directly to waiter");
+    OS_CHECK(ek_os_kfifo_is_empty(s_kfifo), "direct handoff keeps kfifo list empty");
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_kfifo_get_err[1] == 0 && s_kfifo_got[1] == &s_kfifo_items[0] && s_kfifo_wake_order[0] == 1 &&
+                 s_kfifo_get_err[0] == 1,
+             "highest priority waiter woken first via direct handoff");
+
+    OS_CHECK(ek_os_kfifo_put(s_kfifo, &s_kfifo_items[1]) == 0, "kfifo put handoffs to remaining waiter");
+    OS_CHECK(ek_os_thread_join(high_tid, -1, NULL) == 0, "join high kfifo waiter");
+    OS_CHECK(ek_os_thread_join(low_tid, -1, NULL) == 0, "join low kfifo waiter");
+    OS_CHECK(s_kfifo_get_err[0] == 0 && s_kfifo_got[0] == &s_kfifo_items[1] && s_kfifo_wake_order[1] == 0,
+             "low waiter receives second item");
+    OS_CHECK(ek_os_kfifo_is_empty(s_kfifo), "kfifo empty after handoffs");
+
+    /* 等待期间被 suspend 打断返回 -EINTR */
+    s_kfifo_get_err[0] = 1;
+    int susp_tid = ek_os_thread_create("kfifo_susp", _kfifo_waiter, (void *)(intptr_t)0, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(ek_os_thread_suspend(susp_tid) == 0, "suspend kfifo waiter");
+    OS_CHECK(ek_os_thread_resume(susp_tid) == 0, "resume suspended kfifo waiter");
+    OS_CHECK(ek_os_thread_join(susp_tid, -1, NULL) == 0, "join suspended kfifo waiter");
+    OS_CHECK(s_kfifo_get_err[0] == -EINTR && s_kfifo_got[0] == NULL, "suspended kfifo waiter returns -EINTR");
+
+    /* destroy 唤醒等待者返回 -ECANCELED */
+    s_kfifo_get_err[0] = 1;
+    int cancel_tid = ek_os_thread_create("kfifo_cancel", _kfifo_waiter, (void *)(intptr_t)0, PRIO_HIGH, TEST_STACK);
+    ek_os_thread_sleep(5000);
+    OS_CHECK(s_kfifo_get_err[0] == 1, "waiter blocked before kfifo destroy");
+    ek_os_kfifo_destroy(s_kfifo);
+    s_kfifo = NULL;
+    OS_CHECK(ek_os_thread_join(cancel_tid, -1, NULL) == 0, "join cancelled kfifo waiter");
+    OS_CHECK(s_kfifo_get_err[0] == -ECANCELED, "destroy wakes kfifo waiter with -ECANCELED");
+
+    /* 静态缓冲区创建边界与销毁后拒绝访问 */
+    OS_CHECK(ek_os_kfifo_create_static(NULL, sizeof(s_static_kfifo_mem.buf)) == NULL,
+             "kfifo create_static(NULL) returns NULL");
+    OS_CHECK(ek_os_kfifo_create_static(s_static_kfifo_mem.buf, EK_OS_KFIFO_STATIC_BUF_SIZE - 1U) == NULL,
+             "kfifo create_static undersized returns NULL");
+
+    _Alignas(ek_os_kfifo_t) uint8_t unaligned_kfifo_buf[EK_OS_KFIFO_STATIC_BUF_SIZE + sizeof(void *)];
+    OS_CHECK(ek_os_kfifo_create_static(unaligned_kfifo_buf + 1U, EK_OS_KFIFO_STATIC_BUF_SIZE) == NULL,
+             "kfifo create_static unaligned returns NULL");
+
+    ek_os_kfifo_t *st_fifo = ek_os_kfifo_create_static(s_static_kfifo_mem.buf, sizeof(s_static_kfifo_mem.buf));
+    OS_CHECK(st_fifo != NULL, "kfifo create_static");
+    if (st_fifo)
+    {
+        OS_CHECK(ek_os_kfifo_put(st_fifo, &s_kfifo_items[0]) == 0, "put static kfifo");
+        OS_CHECK(ek_os_kfifo_peek(st_fifo, &out) == 0 && out == &s_kfifo_items[0], "peek static kfifo");
+        OS_CHECK(ek_os_kfifo_get(st_fifo, &out, 0) == 0 && out == &s_kfifo_items[0], "get static kfifo");
+        ek_os_kfifo_destroy(st_fifo);
+        OS_CHECK(ek_os_kfifo_is_empty(st_fifo), "destroyed static kfifo reports empty");
+        OS_CHECK(ek_os_kfifo_put(st_fifo, &s_kfifo_items[0]) == -ENOENT, "destroyed static kfifo rejects put");
+        OS_CHECK(ek_os_kfifo_get(st_fifo, &out, 0) == -ENOENT, "destroyed static kfifo rejects get");
+        OS_CHECK(ek_os_kfifo_peek(st_fifo, &out) == -ENOENT, "destroyed static kfifo rejects peek");
+    }
+
+#if EKCFG_STATIC_ALLOC == 1
+    /* EK_DEFINE_OS_KFIFO 自动注册验证 */
+    OS_CHECK(s_def_kfifo != NULL && ek_os_kfifo_is_empty(s_def_kfifo), "EK_DEFINE_OS_KFIFO initialized and empty");
+    if (s_def_kfifo)
+    {
+        OS_CHECK(ek_os_kfifo_put(s_def_kfifo, &s_kfifo_items[0]) == 0, "put EK_DEFINE_OS_KFIFO");
+        OS_CHECK(ek_os_kfifo_peek(s_def_kfifo, &out) == 0 && out == &s_kfifo_items[0], "peek EK_DEFINE_OS_KFIFO");
+        out = NULL;
+        OS_CHECK(ek_os_kfifo_get(s_def_kfifo, &out, 0) == 0 && out == &s_kfifo_items[0], "get EK_DEFINE_OS_KFIFO");
+        OS_CHECK(ek_os_kfifo_is_empty(s_def_kfifo), "EK_DEFINE_OS_KFIFO empty after get");
+    }
+#endif
+
+    EK_LOG_INFO("kfifo_test finished: %s", s_done ? "FAILED" : "ALL PASS");
+}
+
+static void *_kfifo_main(void *arg)
+{
+    (void)arg;
+    _kfifo_test();
+    return NULL;
+}
+
 static void *_test_main(void *arg)
 {
     (void)arg;
@@ -1057,6 +1262,9 @@ static void *_test_main(void *arg)
 
     int bar_tid = ek_os_thread_create("bar_main", _barrier_main, NULL, PRIO_TEST, 1536);
     OS_CHECK(ek_os_thread_join(bar_tid, -1, NULL) == 0, "join barrier test thread");
+
+    int kfifo_tid = ek_os_thread_create("kfifo_main", _kfifo_main, NULL, PRIO_TEST, 1536);
+    OS_CHECK(ek_os_thread_join(kfifo_tid, -1, NULL) == 0, "join kfifo test thread");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;
