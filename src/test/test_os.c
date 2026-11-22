@@ -639,6 +639,32 @@ static void *_cv_cancel_waiter(void *arg)
     return NULL;
 }
 
+static volatile uint8_t s_cv_morph_prio;
+static volatile bool s_cv_morph_woke_early;
+
+static void *_cv_morph_high(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_cv_mtx, EK_OS_FOREVER);
+    /* 带 20 ms 超时等待，验证 Wait Morphing 会正确解除原超时定时器 */
+    s_cv_wait_err[0] = ek_os_condvar_wait(s_cv, s_cv_mtx, 20000);
+    s_cv_unlock_err[0] = ek_os_mutex_unlock(s_cv_mtx);
+    return NULL;
+}
+
+static void *_cv_morph_low(void *arg)
+{
+    (void)arg;
+    ek_os_mutex_lock(s_cv_mtx, EK_OS_FOREVER);
+    ek_os_condvar_signal(s_cv);
+    (void)ek_os_thread_get_prio(ek_os_kernel_current_tid(), (uint8_t *)&s_cv_morph_prio);
+    s_cv_morph_woke_early = (s_cv_wait_err[0] == 0);
+    /* 故意持锁超过高优先级线程原先的 20 ms 超时点再释放 */
+    ek_os_thread_sleep(30000);
+    ek_os_mutex_unlock(s_cv_mtx);
+    return NULL;
+}
+
 /* 条件变量用例：参数边界、超时重持锁、signal 优先级唤醒、broadcast、destroy 取消、静态创建 */
 static void _condvar_test(void)
 {
@@ -767,6 +793,36 @@ static void _condvar_test(void)
 
     ek_os_mutex_destroy(s_cv_mtx);
     s_cv_mtx = NULL;
+
+    /* 持锁 signal 触发 Wait Morphing + 优先级继承 + 原超时解除与锁计数校验 */
+    s_cv = ek_os_condvar_create();
+    s_cv_mtx = ek_os_mutex_create();
+    OS_CHECK(s_cv != NULL && s_cv_mtx != NULL, "condvar and mutex create for wait morphing");
+    if (s_cv && s_cv_mtx)
+    {
+        s_cv_wait_err[0] = 1;
+        s_cv_unlock_err[0] = 1;
+        s_cv_morph_prio = 255U;
+        s_cv_morph_woke_early = true;
+
+        int mh_tid = ek_os_thread_create("cv_mh", _cv_morph_high, NULL, PRIO_HIGH, TEST_STACK);
+        ek_os_thread_sleep(5000);
+        int ml_tid = ek_os_thread_create("cv_ml", _cv_morph_low, NULL, PRIO_LOW, TEST_STACK);
+
+        OS_CHECK(ek_os_thread_join(ml_tid, -1, NULL) == 0, "join wait morphing low signaler");
+        OS_CHECK(ek_os_thread_join(mh_tid, -1, NULL) == 0, "join wait morphing high waiter");
+        OS_CHECK(s_cv_morph_prio == PRIO_HIGH, "wait morphing promotes lock owner to waiter prio");
+        OS_CHECK(!s_cv_morph_woke_early, "wait morphing avoids futile wakeup while lock held");
+        OS_CHECK(s_cv_wait_err[0] == 0, "morphed waiter cancels timeout and returns 0");
+        OS_CHECK(s_cv_unlock_err[0] == 0, "morphed waiter unlocks cleanly");
+        OS_CHECK(ek_os_mutex_trylock(s_cv_mtx) == 0 && ek_os_mutex_unlock(s_cv_mtx) == 0,
+                 "mutex lock count clean after morphed wakeup");
+
+        ek_os_condvar_destroy(s_cv);
+        ek_os_mutex_destroy(s_cv_mtx);
+        s_cv = NULL;
+        s_cv_mtx = NULL;
+    }
 
     /* 静态创建边界与销毁后拒绝访问 */
     OS_CHECK(ek_os_condvar_create_static(NULL, sizeof(s_static_cv_mem.buf)) == NULL,
