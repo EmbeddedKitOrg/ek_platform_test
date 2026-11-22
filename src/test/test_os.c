@@ -1243,6 +1243,12 @@ static void *_kfifo_main(void *arg)
     return NULL;
 }
 
+static void *_conformance_main(void *arg)
+{
+    (void)arg;
+    return (void *)(intptr_t)os_conformance_test();
+}
+
 static void *_test_main(void *arg)
 {
     (void)arg;
@@ -1321,6 +1327,11 @@ static void *_test_main(void *arg)
 
     int kfifo_tid = ek_os_thread_create("kfifo_main", _kfifo_main, NULL, PRIO_TEST, 1536);
     OS_CHECK(ek_os_thread_join(kfifo_tid, -1, NULL) == 0, "join kfifo test thread");
+
+    void *conf_ret = NULL;
+    int conf_tid = ek_os_thread_create("conf_main", _conformance_main, NULL, PRIO_TEST, 2048);
+    OS_CHECK(ek_os_thread_join(conf_tid, -1, &conf_ret) == 0 && (int)(intptr_t)conf_ret == 0,
+             "conformance test passed");
 
     EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
     s_done = true;

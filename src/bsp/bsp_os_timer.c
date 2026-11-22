@@ -116,9 +116,9 @@ static void _os_set_timeout_us(int64_t delta_us)
     /* 内核用负数表示「当前没有定时需求」，停表即可 */
     if (delta_us < 0) return;
 
-    /* 超过 16 位量程时先按最大值装一枪，到期提前唤醒后内核会自动续期 */
+    /* 超过 16 位量程时先按最大值装一枪，到期提前唤醒后内核会自动续期；GD32 基本定时器 CAR = 0 会停表且永不触发更新中断 */
     uint32_t ticks = (delta_us > (int64_t)UINT16_MAX) ? UINT16_MAX : (uint32_t)delta_us;
-    if (ticks == 0U) ticks = 1U;
+    if (ticks < 2U) ticks = 2U;
 
     timer_single_pulse_mode_config(OS_ALARM_TIMER, TIMER_SP_MODE_SINGLE);
     timer_autoreload_value_config(OS_ALARM_TIMER, ticks - 1U);
