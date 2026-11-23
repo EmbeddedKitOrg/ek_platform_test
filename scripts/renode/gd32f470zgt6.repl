@@ -21,16 +21,16 @@ tcmram: Memory.MappedMemory @ sysbus 0x10000000
 usart0: UART.STM32_UART @ sysbus <0x40011000, +0x100>
     -> nvic@37
 
-// GD32 TIMER4 = 32 位通用定时器（自由运行做时间源）
+// GD32 TIMER4 = 32 位通用定时器（RTOS 时间源 + CH0 比较闹钟，APB1 x 2 = 120 MHz）
 timer4: Timers.STM32_Timer @ sysbus 0x40000C00
     -> nvic@50
-    frequency: 1000000
+    frequency: 120000000
     initialLimit: 0xFFFFFFFF
 
-// GD32 TIMER5 = 基本定时器（单次闹钟）
+// GD32 TIMER5 = 基本定时器（APB1 x 2 = 120 MHz）
 timer5: Timers.STM32_Timer @ sysbus 0x40001000
     -> nvic@54
-    frequency: 1000000
+    frequency: 120000000
     initialLimit: 0xFFFF
 
 sysbus:

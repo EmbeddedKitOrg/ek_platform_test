@@ -1,15 +1,3 @@
-/**
- * @file bsp_os_timer.c
- * @brief RTOS 时间源与单次闹钟
- *
- * 自由时间源按下面顺序选择，运行期自动探测：
- *   1. DWT->CYCCNT（真机，CPU 周期计数，软件扩展为 64 位后换算成微秒）；
- *   2. 探测失败（如 Renode 不模拟 CYCCNT）时回退到 SysTick 1 ms 节拍。
- *
- * 单次闹钟固定使用 TIMER5：单脉冲模式、1 MHz（1 tick = 1 us），
- * 到期中断中调用 ek_os_kernel_announce_isr()。
- */
-
 #include "bsp_os_timer.h"
 
 #if EKCFG_RTOS == 1
@@ -17,37 +5,22 @@
 #    include "ek/core/arch.h"
 #    include "ek/core/export.h"
 
-/* 单次闹钟 */
-#    define OS_ALARM_TIMER TIMER5
-#    define OS_ALARM_RCU   RCU_TIMER5
-#    define OS_ALARM_IRQ   TIMER5_DAC_IRQn
-
-/* 计数频率：1 MHz，即 1 tick = 1 us */
-#    define OS_TIMER_TICK_HZ (1000000U)
-
-/* 内核默认时钟频率回退值（SystemCoreClock 为 0 时使用） */
+#    define OS_TIMER           TIMER4
+#    define OS_TIMER_RCU       RCU_TIMER4
+#    define OS_TIMER_IRQ       TIMER4_IRQn
+#    define OS_TIMER_CH        TIMER_CH_0
+#    define OS_TIMER_TICK_HZ   (1000000U)
 #    define OS_DEFAULT_CORE_HZ (240000000U)
+#    define OS_TIMER_MAX_DELTA (0x7FFFFFFFU)
 
-/* 自动探测结果：true 用 DWT + TIMER5，false 回退 SysTick 1ms 节拍 */
-static bool s_use_dwt;
-static volatile uint32_t s_systick_ms;
-
-static uint32_t s_last_cnt;
-static uint64_t s_cnt_base;
+static uint64_t s_high_us;
 
 static uint32_t _core_hz(void)
 {
     return SystemCoreClock ? SystemCoreClock : OS_DEFAULT_CORE_HZ;
 }
 
-/* 每微秒的 CPU 周期数；至少为 1，避免除零 */
-static uint32_t _cycles_per_us(void)
-{
-    uint32_t div = _core_hz() / 1000000U;
-    return div ? div : 1U;
-}
-
-/* TIMER 时钟 = APB1 x 2 = SystemCoreClock / 2，分频到 1 MHz */
+// TIMER 时钟 = APB1 x 2 = SystemCoreClock / 2，分频到 1 MHz
 static uint16_t _timer_prescaler(void)
 {
     uint32_t div = (_core_hz() / 2U) / OS_TIMER_TICK_HZ;
@@ -55,126 +28,113 @@ static uint16_t _timer_prescaler(void)
     return (uint16_t)(div - 1U);
 }
 
-/* 探测 DWT->CYCCNT 是否会递增；Renode 等环境读回恒 0 时返回 false */
-static bool _dwt_probe(void)
-{
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0U;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-
-    for (volatile uint32_t i = 0; i < 1000U; i++)
-    {
-    }
-
-    return DWT->CYCCNT != 0U;
-}
-
-static void _systick_handler(void)
-{
-    if (s_use_dwt) return;
-    s_systick_ms++;
-    ek_os_kernel_announce_isr();
-}
-
-EK_DEFINE_ARCH_IRQ(SysTick_IRQn, _systick_handler);
-
-static void _systick_init(void)
-{
-    s_systick_ms = 0U;
-    (void)SysTick_Config(_core_hz() / 1000U);
-}
-
+// 关中断临界区内读取 64 位单调微秒时间，并处理尚未被 UP ISR 消费的溢出回绕
 static uint64_t _os_now_us(void)
 {
-    if (!s_use_dwt)
-    {
-        uint32_t flags = ek_arch_irq_lock();
-        uint64_t us = (uint64_t)s_systick_ms * 1000ULL;
-        ek_arch_irq_unlock(flags);
-        return us;
-    }
-
     uint32_t flags = ek_arch_irq_lock();
-
-    uint32_t cnt = DWT->CYCCNT;
-    if (cnt < s_last_cnt) s_cnt_base += (1ULL << 32); /* 32 位 CYCCNT 回绕 */
-    s_last_cnt = cnt;
-    uint64_t cycles = s_cnt_base + cnt;
-
+    uint32_t cnt = timer_counter_read(OS_TIMER);
+    if (timer_flag_get(OS_TIMER, TIMER_FLAG_UP) != RESET && cnt < 0x80000000U)
+    {
+        timer_flag_clear(OS_TIMER, TIMER_FLAG_UP);
+        s_high_us += (1ULL << 32);
+    }
+    uint64_t us = s_high_us + cnt;
     ek_arch_irq_unlock(flags);
-
-    return cycles / _cycles_per_us();
+    return us;
 }
 
+// 使用 CH0 比较中断设置单次 Tickless 闹钟，delta_us < 0 仅关闭比较中断
 static void _os_set_timeout_us(int64_t delta_us)
 {
-    /* SysTick 模式：周期节拍已经在跑，无需单次闹钟 */
-    if (!s_use_dwt) return;
+    uint32_t flags = ek_arch_irq_lock();
+    timer_interrupt_disable(OS_TIMER, TIMER_INT_CH0);
+    timer_flag_clear(OS_TIMER, TIMER_FLAG_CH0);
 
-    timer_disable(OS_ALARM_TIMER);
+    if (delta_us < 0)
+    {
+        ek_arch_irq_unlock(flags);
+        return;
+    }
 
-    /* 内核用负数表示「当前没有定时需求」，停表即可 */
-    if (delta_us < 0) return;
+    if (delta_us == 0)
+    {
+        timer_interrupt_enable(OS_TIMER, TIMER_INT_CH0);
+        timer_event_software_generate(OS_TIMER, TIMER_EVENT_SRC_CH0G);
+        ek_arch_irq_unlock(flags);
+        return;
+    }
 
-    /* 超过 16 位量程时先按最大值装一枪，到期提前唤醒后内核会自动续期；GD32 基本定时器 CAR = 0 会停表且永不触发更新中断 */
-    uint32_t ticks = (delta_us > (int64_t)UINT16_MAX) ? UINT16_MAX : (uint32_t)delta_us;
-    if (ticks < 2U) ticks = 2U;
+    uint32_t step = (delta_us > (int64_t)OS_TIMER_MAX_DELTA) ? OS_TIMER_MAX_DELTA : (uint32_t)delta_us;
+    uint32_t target = timer_counter_read(OS_TIMER) + step;
 
-    timer_single_pulse_mode_config(OS_ALARM_TIMER, TIMER_SP_MODE_SINGLE);
-    timer_autoreload_value_config(OS_ALARM_TIMER, ticks - 1U);
-    timer_counter_value_config(OS_ALARM_TIMER, 0U);
-    timer_interrupt_flag_clear(OS_ALARM_TIMER, TIMER_INT_FLAG_UP);
-    timer_enable(OS_ALARM_TIMER);
+    timer_channel_output_pulse_value_config(OS_TIMER, OS_TIMER_CH, target);
+    timer_flag_clear(OS_TIMER, TIMER_FLAG_CH0);
+    timer_interrupt_enable(OS_TIMER, TIMER_INT_CH0);
+
+    // 防止极短超时在配置期间已被计数器越过而漏掉比较匹配
+    if ((int32_t)(target - timer_counter_read(OS_TIMER)) <= 0)
+    {
+        timer_event_software_generate(OS_TIMER, TIMER_EVENT_SRC_CH0G);
+    }
+
+    ek_arch_irq_unlock(flags);
 }
 
 static void _os_timer_irq_handler(void)
 {
-    if (timer_interrupt_flag_get(OS_ALARM_TIMER, TIMER_INT_FLAG_UP))
+    bool alarm = false;
+    uint32_t flags = ek_arch_irq_lock();
+
+    if (timer_interrupt_flag_get(OS_TIMER, TIMER_INT_FLAG_UP) != RESET)
     {
-        timer_interrupt_flag_clear(OS_ALARM_TIMER, TIMER_INT_FLAG_UP);
+        timer_interrupt_flag_clear(OS_TIMER, TIMER_INT_FLAG_UP);
+        s_high_us += (1ULL << 32);
+    }
+
+    if (timer_interrupt_flag_get(OS_TIMER, TIMER_INT_FLAG_CH0) != RESET)
+    {
+        timer_interrupt_flag_clear(OS_TIMER, TIMER_INT_FLAG_CH0);
+        timer_interrupt_disable(OS_TIMER, TIMER_INT_CH0);
+        alarm = true;
+    }
+
+    ek_arch_irq_unlock(flags);
+
+    if (alarm)
+    {
         ek_os_kernel_announce_isr();
     }
 }
 
-EK_DEFINE_ARCH_IRQ(OS_ALARM_IRQ, _os_timer_irq_handler);
+EK_DEFINE_ARCH_IRQ(OS_TIMER_IRQ, _os_timer_irq_handler);
 
 static void _os_timer_init(void)
 {
-    /* 自由时间源：优先 DWT，不可用则回退 SysTick 1 ms 节拍 */
-    s_use_dwt = _dwt_probe();
-    if (s_use_dwt)
-    {
-        /* 停用启动阶段开启的 SysTick，避免 Tickless 模式下每 1 ms 多余唤醒内核 */
-        SysTick->CTRL = 0U;
-        SysTick->VAL = 0U;
-        SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
-
-        DWT->CYCCNT = 0U;
-        s_last_cnt = DWT->CYCCNT;
-        s_cnt_base = 0U;
-    }
-    else
-    {
-        /* Renode 等不驱动 CYCCNT 的环境：退化为 1 ms 周期节拍 */
-        _systick_init();
-    }
-
-    /* 单次闹钟：TIMER5 */
-    rcu_periph_clock_enable(OS_ALARM_RCU);
+    rcu_periph_clock_enable(OS_TIMER_RCU);
     rcu_timer_clock_prescaler_config(RCU_TIMER_PSC_MUL2);
+    timer_deinit(OS_TIMER);
 
-    timer_parameter_struct cfg = {
-        .counterdirection = TIMER_COUNTER_UP,
-        .alignedmode = TIMER_COUNTER_EDGE,
-        .prescaler = _timer_prescaler(),
-        .period = UINT16_MAX - 1U,
-    };
+    timer_parameter_struct cfg;
+    timer_struct_para_init(&cfg);
+    cfg.prescaler = _timer_prescaler();
+    cfg.alignedmode = TIMER_COUNTER_EDGE;
+    cfg.counterdirection = TIMER_COUNTER_UP;
+    cfg.period = UINT32_MAX;
+    cfg.clockdivision = TIMER_CKDIV_DIV1;
+    timer_init(OS_TIMER, &cfg);
 
-    timer_init(OS_ALARM_TIMER, &cfg);
-    timer_interrupt_flag_clear(OS_ALARM_TIMER, TIMER_INT_FLAG_UP);
-    timer_interrupt_enable(OS_ALARM_TIMER, TIMER_INT_UP);
-    nvic_irq_enable(OS_ALARM_IRQ, 0, 0);
-    timer_disable(OS_ALARM_TIMER);
+    timer_channel_output_mode_config(OS_TIMER, OS_TIMER_CH, TIMER_OC_MODE_TIMING);
+    timer_channel_output_shadow_config(OS_TIMER, OS_TIMER_CH, TIMER_OC_SHADOW_DISABLE);
+    timer_update_source_config(OS_TIMER, TIMER_UPDATE_SRC_REGULAR);
+
+    s_high_us = 0ULL;
+    timer_counter_value_config(OS_TIMER, 0U);
+    timer_flag_clear(OS_TIMER, TIMER_FLAG_UP);
+    timer_flag_clear(OS_TIMER, TIMER_FLAG_CH0);
+    timer_interrupt_disable(OS_TIMER, TIMER_INT_CH0);
+    timer_interrupt_enable(OS_TIMER, TIMER_INT_UP);
+    nvic_irq_enable(OS_TIMER_IRQ, 0, 0);
+    timer_enable(OS_TIMER);
 }
 
 EK_EXPORT_BOARD(_os_timer_init, EXPORT_ORDER_BOARD_TIMER);

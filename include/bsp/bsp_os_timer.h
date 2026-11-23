@@ -1,6 +1,6 @@
 /**
  * @file bsp_os_timer.h
- * @brief RTOS 时间源（DWT 自由计数）与单次闹钟（TIMER5）
+ * @brief RTOS 时间源与单次闹钟（单 32 位通用定时器 TIMER4）
  */
 
 #ifndef BSP_OS_TIMER_H
@@ -16,10 +16,10 @@
 /**
  * @brief 内核时间源与单次闹钟操作表
  *
- * - now：把 DWT->CYCCNT（32 位 CPU 周期计数）扩展成 64 位后换算为微秒；
- * - set_timeout：TIMER5 单次触发，到期后调用 ek_os_kernel_announce_isr()。
+ * - now：读取 32 位 TIMER4 自由计数并结合更新溢出中断扩展为 64 位单调微秒时间；
+ * - set_timeout：通过 TIMER4 CH0 比较中断触发单次唤醒，到期后调用 ek_os_kernel_announce_isr()。
  *
- * @note 时间单位为微秒；delta < 0 表示停表。
+ * @note 时间单位为微秒；delta < 0 表示关闭闹钟但保持时间源继续运行。
  */
 extern const ek_os_timer_ops_t g_bsp_os_timer_ops;
 
