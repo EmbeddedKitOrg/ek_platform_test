@@ -54,5 +54,6 @@ void os_test(void);
 int os_test_run(void);
 int os_conformance_test(void);
 void os_stackoverflow_test(void);
+int fpu_test(void);
 
 #endif // TEST_H

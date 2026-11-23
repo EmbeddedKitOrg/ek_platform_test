@@ -131,6 +131,17 @@ static int _cmd_test_os_conf(int argc, char *argv[], void *sh)
 }
 EK_DEFINE_SHELL_CMD(test_os_conf, _cmd_test_os_conf);
 
+#    if defined(__ARM_FP) && (__ARM_FP != 0)
+static int _cmd_test_fpu(int argc, char *argv[], void *sh)
+{
+    __EK_UNUSED(argc);
+    __EK_UNUSED(argv);
+    __EK_UNUSED(sh);
+    return fpu_test();
+}
+EK_DEFINE_SHELL_CMD(test_fpu, _cmd_test_fpu);
+#    endif
+
 // 默认跑完所有快速无外设测试；传入 "os" 时额外执行完整 RTOS 套件
 static int _cmd_test_all(int argc, char *argv[], void *sh)
 {
@@ -159,9 +170,12 @@ static int _cmd_test_all(int argc, char *argv[], void *sh)
 #    endif
 
     int err = 0;
+#    if defined(__ARM_FP) && (__ARM_FP != 0)
+    err += fpu_test();
+#    endif
     if (argc > 1 && strcmp(argv[1], "os") == 0)
     {
-        err = os_test_run();
+        err += os_test_run();
     }
 
     ek_printf("test_all finished: %s" CRLF, (err == 0) ? "ALL PASS" : "FAILED");
