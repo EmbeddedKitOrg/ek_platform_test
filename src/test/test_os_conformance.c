@@ -32,15 +32,15 @@ EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_DEBUG);
 static uint32_t s_total;
 static uint32_t s_fail;
 
-#    define CONF_CHECK(cond, msg)                         \
-        do                                                \
-        {                                                 \
-            s_total++;                                    \
-            if (!(cond))                                  \
-            {                                             \
-                s_fail++;                                 \
-                EK_LOG_ERROR("[CONF FAIL] %s", (msg));    \
-            }                                             \
+#    define CONF_CHECK(cond, msg)                      \
+        do                                             \
+        {                                              \
+            s_total++;                                 \
+            if (!(cond))                               \
+            {                                          \
+                s_fail++;                              \
+                EK_LOG_ERROR("[CONF FAIL] %s", (msg)); \
+            }                                          \
         } while (0)
 
 /* ========================================================================
@@ -247,11 +247,11 @@ static void _test_isr_conformance(void)
     s_isr_ctx.fifo_wait = ek_os_kfifo_create();
     s_isr_ctx.fifo_idle = ek_os_kfifo_create();
 
-    CONF_CHECK(s_isr_ctx.sem && s_isr_ctx.mtx && s_isr_ctx.cv && s_isr_ctx.bar && s_isr_ctx.mq &&
-                   s_isr_ctx.fifo_wait && s_isr_ctx.fifo_idle,
+    CONF_CHECK(s_isr_ctx.sem && s_isr_ctx.mtx && s_isr_ctx.cv && s_isr_ctx.bar && s_isr_ctx.mq && s_isr_ctx.fifo_wait &&
+                   s_isr_ctx.fifo_idle,
                "RV2 ISR: create test objects");
-    if (!s_isr_ctx.sem || !s_isr_ctx.mtx || !s_isr_ctx.cv || !s_isr_ctx.bar || !s_isr_ctx.mq ||
-        !s_isr_ctx.fifo_wait || !s_isr_ctx.fifo_idle)
+    if (!s_isr_ctx.sem || !s_isr_ctx.mtx || !s_isr_ctx.cv || !s_isr_ctx.bar || !s_isr_ctx.mq || !s_isr_ctx.fifo_wait ||
+        !s_isr_ctx.fifo_idle)
     {
         return;
     }
@@ -506,8 +506,7 @@ static void _test_pi_advanced(void)
     ek_os_thread_sleep(2000);
 
     ek_os_mutex_unlock(s_pi_m1);
-    CONF_CHECK(ek_os_thread_join(w_h, EK_OS_MSEC(50), NULL) == 0 &&
-                   ek_os_thread_join(w_m, EK_OS_MSEC(50), NULL) == 0 &&
+    CONF_CHECK(ek_os_thread_join(w_h, EK_OS_MSEC(50), NULL) == 0 && ek_os_thread_join(w_m, EK_OS_MSEC(50), NULL) == 0 &&
                    ek_os_thread_join(w_l, EK_OS_MSEC(50), NULL) == 0,
                "Mutex order: join all waiters");
     CONF_CHECK(s_mtx_order_idx == 3 && s_mtx_order[0] == 1 && s_mtx_order[1] == 2 && s_mtx_order[2] == 3,
@@ -608,8 +607,7 @@ static void _test_condvar_morph_edge(void)
     CONF_CHECK(ek_os_condvar_broadcast(s_cvm_cv) == 0, "CV morph: broadcast under held mutex ok");
     ek_os_mutex_unlock(s_cvm_mtx);
 
-    CONF_CHECK(ek_os_thread_join(b_h, EK_OS_MSEC(50), NULL) == 0 &&
-                   ek_os_thread_join(b_m, EK_OS_MSEC(50), NULL) == 0 &&
+    CONF_CHECK(ek_os_thread_join(b_h, EK_OS_MSEC(50), NULL) == 0 && ek_os_thread_join(b_m, EK_OS_MSEC(50), NULL) == 0 &&
                    ek_os_thread_join(b_l, EK_OS_MSEC(50), NULL) == 0,
                "CV morph: join broadcast waiters");
     CONF_CHECK(s_cvm_bc_idx == 3 && s_cvm_bc_order[0] == 1 && s_cvm_bc_order[1] == 2 && s_cvm_bc_order[2] == 3,
@@ -685,7 +683,7 @@ static void _test_tickless_timeouts(void)
     /* 乱序插入更早到期项，校验队头动态替换与唤醒次序 */
     static sleep_arg_t args[3] = {
         { 0, 30000 },
-        { 1, 5000 },
+        { 1, 5000  },
         { 2, 12000 },
     };
     s_sleep_order_idx = 0;
@@ -696,8 +694,7 @@ static void _test_tickless_timeouts(void)
     ek_os_thread_sleep(1000);
     int tc = ek_os_thread_create("slp_c", _sleep_worker, &args[2], CONF_PRIO_M, CONF_STACK);
 
-    CONF_CHECK(ek_os_thread_join(tb, EK_OS_MSEC(50), NULL) == 0 &&
-                   ek_os_thread_join(tc, EK_OS_MSEC(50), NULL) == 0 &&
+    CONF_CHECK(ek_os_thread_join(tb, EK_OS_MSEC(50), NULL) == 0 && ek_os_thread_join(tc, EK_OS_MSEC(50), NULL) == 0 &&
                    ek_os_thread_join(ta, EK_OS_MSEC(100), NULL) == 0,
                "Tickless out-of-order: join all");
     CONF_CHECK(s_sleep_order_idx == 3 && s_sleep_order[0] == 1 && s_sleep_order[1] == 2 && s_sleep_order[2] == 0,
@@ -1283,11 +1280,8 @@ static void _test_heap_leak_stress(void)
 
     size_t used1 = ek_heap_used();
     size_t unused1 = ek_heap_unused();
-    EK_LOG_INFO("heap baseline: used=%zu unused=%zu | after 30 rounds: used=%zu unused=%zu",
-                used0,
-                unused0,
-                used1,
-                unused1);
+    EK_LOG_INFO(
+        "heap baseline: used=%zu unused=%zu | after 30 rounds: used=%zu unused=%zu", used0, unused0, used1, unused1);
     CONF_CHECK(used1 == used0 && unused1 == unused0, "TLSF heap: 0 bytes leaked across 30 full lifecycle rounds");
 }
 

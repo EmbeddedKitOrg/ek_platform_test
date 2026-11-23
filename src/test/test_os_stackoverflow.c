@@ -20,19 +20,19 @@ EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_DEBUG);
 static uint32_t s_total;
 static uint32_t s_fail;
 
-#    define SOF_CHECK(cond, msg)                           \
-        do                                                 \
-        {                                                  \
-            s_total++;                                     \
-            if (cond)                                      \
-            {                                              \
-                EK_LOG_INFO("PASS: %s", (msg));            \
-            }                                              \
-            else                                           \
-            {                                              \
-                s_fail++;                                  \
-                EK_LOG_ERROR("FAIL: %s", (msg));           \
-            }                                              \
+#    define SOF_CHECK(cond, msg)                 \
+        do                                       \
+        {                                        \
+            s_total++;                           \
+            if (cond)                            \
+            {                                    \
+                EK_LOG_INFO("PASS: %s", (msg));  \
+            }                                    \
+            else                                 \
+            {                                    \
+                s_fail++;                        \
+                EK_LOG_ERROR("FAIL: %s", (msg)); \
+            }                                    \
         } while (0)
 
 static volatile uint32_t s_idle_cnt;
@@ -189,11 +189,8 @@ static void *_sof_test_main(void *arg)
     if (ovf1_tid > 0)
     {
         SOF_CHECK(ek_os_thread_join(ovf1_tid, EK_OS_MSEC(500), NULL) == 0, "join lvl1 overflow worker");
-        EK_LOG_INFO("lvl1 hook: cnt=%lu tid=%d (expect %d) name=%s",
-                    (unsigned long)s_ovf_cnt,
-                    s_ovf_tid,
-                    ovf1_tid,
-                    s_ovf_name);
+        EK_LOG_INFO(
+            "lvl1 hook: cnt=%lu tid=%d (expect %d) name=%s", (unsigned long)s_ovf_cnt, s_ovf_tid, ovf1_tid, s_ovf_name);
         SOF_CHECK(s_ovf_cnt >= 1U && s_ovf_tid == ovf1_tid && strcmp(s_ovf_name, "ovf_lvl1") == 0,
                   "lvl1 captured sp < base overflow with exact tid and name");
         SOF_CHECK(_canary_intact(), "lvl1 overflow remained safely inside underflow_pad");
@@ -220,14 +217,13 @@ static void *_sof_test_main(void *arg)
     ek_os_thread_sleep(EK_OS_MSEC(10));
 
     size_t used_peak = 0U;
-    SOF_CHECK(ek_os_thread_stack_high_water_mark(hwm_tid, &used_peak, NULL) == 0 &&
-                  used_peak > used_base && used_peak >= 320U && used_peak < total_sz,
+    SOF_CHECK(ek_os_thread_stack_high_water_mark(hwm_tid, &used_peak, NULL) == 0 && used_peak > used_base &&
+                  used_peak >= 320U && used_peak < total_sz,
               "hwm peak captures returned deep frame");
     EK_LOG_INFO("hwm stats: base=%zu peak=%zu total=%zu", used_base, used_peak, total_sz);
 
     SOF_CHECK(ek_os_thread_stack_high_water_mark(hwm_tid, NULL, NULL) == -EINVAL, "hwm(NULL, NULL) returns -EINVAL");
-    SOF_CHECK(ek_os_thread_stack_high_water_mark(9999, &used_peak, &total_sz) == -ESRCH,
-              "hwm(bad tid) returns -ESRCH");
+    SOF_CHECK(ek_os_thread_stack_high_water_mark(9999, &used_peak, &total_sz) == -ESRCH, "hwm(bad tid) returns -ESRCH");
 
     ek_os_sem_give(s_hwm_sem2);
     SOF_CHECK(ek_os_thread_join(hwm_tid, EK_OS_MSEC(500), NULL) == 0, "join hwm worker");
@@ -242,11 +238,8 @@ static void *_sof_test_main(void *arg)
     if (ovf2_tid > 0)
     {
         SOF_CHECK(ek_os_thread_join(ovf2_tid, EK_OS_MSEC(500), NULL) == 0, "join lvl2 guard worker");
-        EK_LOG_INFO("lvl2 hook: cnt=%lu tid=%d (expect %d) name=%s",
-                    (unsigned long)s_ovf_cnt,
-                    s_ovf_tid,
-                    ovf2_tid,
-                    s_ovf_name);
+        EK_LOG_INFO(
+            "lvl2 hook: cnt=%lu tid=%d (expect %d) name=%s", (unsigned long)s_ovf_cnt, s_ovf_tid, ovf2_tid, s_ovf_name);
         SOF_CHECK(s_ovf_cnt >= 1U && s_ovf_tid == ovf2_tid && strcmp(s_ovf_name, "ovf_lvl2") == 0,
                   "lvl2 magic sentinel captured transient bottom-guard overwrite");
     }

@@ -869,9 +869,9 @@ static union
     uint8_t buf[EK_OS_BARRIER_STATIC_BUF_SIZE];
 } s_static_bar_mem;
 
-#if EKCFG_STATIC_ALLOC == 1
+#    if EKCFG_STATIC_ALLOC == 1
 EK_DEFINE_OS_BARRIER(s_def_bar, 2U);
-#endif
+#    endif
 
 static void *_bar_cycle_worker(void *arg)
 {
@@ -1015,7 +1015,7 @@ static void _barrier_test(void)
         OS_CHECK(ek_os_barrier_reset(st_bar, 1U) == -ENOENT, "destroyed static barrier rejects reset");
     }
 
-#if EKCFG_STATIC_ALLOC == 1
+#    if EKCFG_STATIC_ALLOC == 1
     /* EK_DEFINE_OS_BARRIER 自动注册验证 */
     OS_CHECK(s_def_bar != NULL, "EK_DEFINE_OS_BARRIER initialized");
     if (s_def_bar)
@@ -1027,7 +1027,7 @@ static void _barrier_test(void)
         OS_CHECK(ek_os_thread_join(def_tid, -1, NULL) == 0, "join EK_DEFINE_OS_BARRIER waiter");
         OS_CHECK(s_bar_single_err == 0, "EK_DEFINE_OS_BARRIER waiter returns 0");
     }
-#endif
+#    endif
 
     EK_LOG_INFO("barrier_test finished: %s", s_done ? "FAILED" : "ALL PASS");
 }
@@ -1060,9 +1060,9 @@ static union
     uint8_t buf[EK_OS_KFIFO_STATIC_BUF_SIZE];
 } s_static_kfifo_mem;
 
-#if EKCFG_STATIC_ALLOC == 1
+#    if EKCFG_STATIC_ALLOC == 1
 EK_DEFINE_OS_KFIFO(s_def_kfifo);
-#endif
+#    endif
 
 static void *_kfifo_waiter(void *arg)
 {
@@ -1133,7 +1133,8 @@ static void _kfifo_test(void)
     for (uint32_t i = 0; i < 3U; i++)
     {
         out = NULL;
-        OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == 0 && out == &s_kfifo_items[i], "kfifo get returns exact item ptr");
+        OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == 0 && out == &s_kfifo_items[i],
+                 "kfifo get returns exact item ptr");
         kfifo_item_t *got = (kfifo_item_t *)out;
         OS_CHECK(got->id == (i + 1U) * 10U && got->node.next == NULL, "kfifo item payload intact and next cleared");
     }
@@ -1146,8 +1147,7 @@ static void _kfifo_test(void)
     OS_CHECK(s_kfifo_items[2].node.next == NULL, "previous tail node not corrupted on re-enqueue");
     OS_CHECK(ek_os_kfifo_peek(s_kfifo, &out) == 0 && out == &s_kfifo_items[3], "kfifo peek sees re-enqueued item");
     out = NULL;
-    OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == 0 && out == &s_kfifo_items[3] &&
-                 ((kfifo_item_t *)out)->id == 40U,
+    OS_CHECK(ek_os_kfifo_get(s_kfifo, &out, 0) == 0 && out == &s_kfifo_items[3] && ((kfifo_item_t *)out)->id == 40U,
              "kfifo get retrieves re-enqueued item");
     OS_CHECK(ek_os_kfifo_is_empty(s_kfifo), "kfifo empty again after draining re-enqueued item");
 
@@ -1220,7 +1220,7 @@ static void _kfifo_test(void)
         OS_CHECK(ek_os_kfifo_peek(st_fifo, &out) == -ENOENT, "destroyed static kfifo rejects peek");
     }
 
-#if EKCFG_STATIC_ALLOC == 1
+#    if EKCFG_STATIC_ALLOC == 1
     /* EK_DEFINE_OS_KFIFO 自动注册验证 */
     OS_CHECK(s_def_kfifo != NULL && ek_os_kfifo_is_empty(s_def_kfifo), "EK_DEFINE_OS_KFIFO initialized and empty");
     if (s_def_kfifo)
@@ -1231,7 +1231,7 @@ static void _kfifo_test(void)
         OS_CHECK(ek_os_kfifo_get(s_def_kfifo, &out, 0) == 0 && out == &s_kfifo_items[0], "get EK_DEFINE_OS_KFIFO");
         OS_CHECK(ek_os_kfifo_is_empty(s_def_kfifo), "EK_DEFINE_OS_KFIFO empty after get");
     }
-#endif
+#    endif
 
     EK_LOG_INFO("kfifo_test finished: %s", s_done ? "FAILED" : "ALL PASS");
 }
