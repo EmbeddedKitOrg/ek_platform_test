@@ -52,7 +52,6 @@ int bsp_uart_send_data(uint8_t ch)
 EK_DEFINE_RINGBUF_SPSC(s_uart_rx_rb, uint8_t, BSP_UART_RX_BUF_SIZE);
 
 static int s_open_count;
-static volatile bool s_tx_done;
 
 static void _rx_push(void)
 {
@@ -69,25 +68,9 @@ static void _uart_isr(void)
         else (void)usart_data_receive(BSP_UART);
     }
     if (RESET != usart_interrupt_flag_get(BSP_UART, USART_INT_FLAG_RBNE)) _rx_push();
-    if (RESET != usart_interrupt_flag_get(BSP_UART, USART_INT_FLAG_TC))
-    {
-        usart_flag_clear(BSP_UART, USART_FLAG_TC);
-        s_tx_done = true;
-    }
 }
 
 EK_DEFINE_ARCH_IRQ(USART0_IRQn, _uart_isr);
-
-// 关中断后再检查并睡眠,避免 TC 中断在检查与 WFI 之间到达而永久睡眠
-static void _uart_wait_tx_done(void)
-{
-    while (!s_tx_done)
-    {
-        __disable_irq();
-        if (!s_tx_done) __WFI();
-        __enable_irq();
-    }
-}
 
 // 打开实例的 O_NONBLOCK 状态直接编码在 file_priv 中,每次 open 独立
 static bool _is_nonblock(void *file_priv)
@@ -103,7 +86,6 @@ static int _uart_open(void *node_priv, int flags, void **file_priv)
     {
         usart_interrupt_enable(BSP_UART, USART_INT_RBNE);
         usart_interrupt_enable(BSP_UART, USART_INT_IDLE);
-        usart_interrupt_enable(BSP_UART, USART_INT_TC);
         nvic_irq_enable(USART0_IRQn, 0, 5);
     }
     return 0;
@@ -115,7 +97,6 @@ static int _uart_close(void *file_priv)
     if (s_open_count > 0 && --s_open_count == 0)
     {
         nvic_irq_disable(USART0_IRQn);
-        usart_interrupt_disable(BSP_UART, USART_INT_TC);
         usart_interrupt_disable(BSP_UART, USART_INT_IDLE);
         usart_interrupt_disable(BSP_UART, USART_INT_RBNE);
     }
@@ -150,12 +131,9 @@ static ssize_t _uart_write(void *file_priv, const void *buf, size_t count, ek_of
     while (n < count)
     {
         if (nonblock && RESET == usart_flag_get(BSP_UART, USART_FLAG_TBE)) break;
-        // 最后一个字节的 TC 才代表本次写完成,发送前清掉之前的完成事件
-        if (!nonblock && n + 1 == count) s_tx_done = false;
         bsp_uart_send_data(src[n++]);
     }
     if (n == 0 && count > 0 && nonblock) return -EAGAIN;
-    if (!nonblock && n > 0) _uart_wait_tx_done();
     return (ssize_t)n;
 }
 

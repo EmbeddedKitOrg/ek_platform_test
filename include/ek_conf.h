@@ -15,10 +15,11 @@
  * 平台/运行环境
  * ======================================================================== */
 
-#define EKCFG_RTOS         (1)
-#define EKCFG_PICOLIBC     (1)
-#define EKCFG_IO_LWPRTF    (0)
-#define EKCFG_STATIC_ALLOC (1)
+#define EKCFG_RTOS            (1)
+#define EKCFG_PICOLIBC        (1)
+#define EKCFG_IO_LWPRTF       (0)
+#define EKCFG_IO_CONSOLE_PATH "/dev/uart0"
+#define EKCFG_STATIC_ALLOC    (1)
 /* ========================================================================
  * 核心服务
  * ======================================================================== */

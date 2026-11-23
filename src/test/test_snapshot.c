@@ -27,6 +27,9 @@ void snapshot_test(void)
 
     TEST_ASSERT(ek_snapshot_set(static_snapshot, &tx, 100U) == -EINVAL, "duplicate unique should be rejected");
 
+    // 复位静态快照，使本测试用例支持通过命令反复执行
+    TEST_ASSERT(ek_snapshot_init_static(static_snapshot, 16U) == 0, "static snapshot reset failed");
+
     TEST_ASSERT_EQ(ek_heap_unused(), unused_before, "static snapshot used heap");
     EK_LOG_INFO("static snapshot test passed");
 

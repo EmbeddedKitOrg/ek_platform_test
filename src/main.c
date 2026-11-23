@@ -62,8 +62,13 @@ int main(void)
     os_stackoverflow_test();
     ek_os_kernel_start(&g_bsp_os_timer_ops);
 #    else
+#        if EKCFG_SHELL == 1
+    shell_test();
+    EK_LOG_INFO("main: shell thread created, starting kernel");
+#        else
     os_test(); /* 创建自检线程，内核启动后才开始运行 */
     EK_LOG_INFO("main: os_test done, starting kernel");
+#        endif
     ek_os_kernel_start(&g_bsp_os_timer_ops);
 #    endif
     EK_LOG_ERROR("main: kernel start returned unexpectedly");
@@ -72,12 +77,6 @@ int main(void)
     while (1)
     {
     }
-}
-
-int ek_port_io_fputc(int ch)
-{
-    bsp_uart_send_data(ch);
-    return ch;
 }
 
 uint32_t ek_port_log_get_tick(void)

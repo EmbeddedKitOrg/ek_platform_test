@@ -10,6 +10,10 @@
 #    include "ek/os/kernel.h"
 #    include "ek/os/sem.h"
 #    include "ek/os/thread.h"
+#    if EKCFG_VFS == 1
+#        include "ek/vfs/vfs_core.h"
+#        include <stdio.h>
+#    endif
 
 EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_DEBUG);
 
@@ -163,6 +167,34 @@ static void *_lvl2_guard_worker(void *arg)
 
 #    endif /* EKCFG_OS_KERNEL_STACKOVERFLOW_CHECK == 2 */
 
+#    if EKCFG_VFS == 1
+
+static struct
+{
+    char buf[64];
+    size_t len;
+} s_vfs_cap;
+
+static ssize_t _mem_out_write(void *file_priv, const void *buf, size_t count, ek_off_t *offset)
+{
+    __EK_UNUSED(file_priv);
+    __EK_UNUSED(offset);
+    const char *src = (const char *)buf;
+    size_t n = 0U;
+    while (n < count && s_vfs_cap.len < (sizeof(s_vfs_cap.buf) - 1U))
+    {
+        s_vfs_cap.buf[s_vfs_cap.len++] = src[n++];
+    }
+    s_vfs_cap.buf[s_vfs_cap.len] = '\0';
+    return (ssize_t)count;
+}
+
+static const ek_vfs_ops_t s_mem_out_ops = {
+    .write = _mem_out_write,
+};
+
+#    endif /* EKCFG_VFS == 1 */
+
 static void *_sof_test_main(void *arg)
 {
     (void)arg;
@@ -243,6 +275,24 @@ static void *_sof_test_main(void *arg)
         SOF_CHECK(s_ovf_cnt >= 1U && s_ovf_tid == ovf2_tid && strcmp(s_ovf_name, "ovf_lvl2") == 0,
                   "lvl2 magic sentinel captured transient bottom-guard overwrite");
     }
+#    endif
+
+#    if EKCFG_VFS == 1
+    /* 验证 VFS stdout 默认映射到 /dev/uart0 且支持运行期热重定向 */
+    memset(&s_vfs_cap, 0, sizeof(s_vfs_cap));
+    SOF_CHECK(ek_vfs_register("/dev/mem_out", EK_VFS_DEV, &s_mem_out_ops, NULL) == 0,
+              "vfs stdio: register /dev/mem_out");
+    int bind_err = ek_vfs_bind_stdout("/dev/mem_out");
+    if (bind_err == 0)
+    {
+        ek_printf("vfs_ok:%d", 42);
+        fflush(stdout);
+    }
+    int restore_err = ek_vfs_bind_stdout(EKCFG_IO_CONSOLE_PATH);
+    SOF_CHECK(bind_err == 0, "vfs stdio: bind stdout to /dev/mem_out");
+    SOF_CHECK(restore_err == 0, "vfs stdio: restore stdout to console");
+    SOF_CHECK(strcmp(s_vfs_cap.buf, "vfs_ok:42") == 0, "vfs stdio: captured redirected ek_printf output");
+    SOF_CHECK(ek_vfs_unregister("/dev/mem_out") == 0, "vfs stdio: unregister /dev/mem_out");
 #    endif
 
     uint32_t passed = s_total - s_fail;

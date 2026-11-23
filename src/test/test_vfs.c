@@ -47,12 +47,24 @@ void vfs_test(void)
 
     EK_LOG_INFO("OK");
 
-    char buf[1024] = { 0 };
-    ek_vfs_tree_dump(buf, 1024);
+    // 使用静态缓冲避免占用调用线程（如 Shell 线程）过多栈空间
+    static char buf[1024];
+    memset(buf, 0, sizeof(buf));
+    ek_vfs_tree_dump(buf, sizeof(buf));
     printf("%s\n", buf);
 
     err = ek_vfs_unregister("/");
     if (err < 0) EK_LOG_ERROR("%s.", strerror(-err));
+
+    // 自底向上注销本次测试动态创建的节点，确保用例可反复运行且不耗尽节点池
+    static const char *const cleanup_paths[] = {
+        "/dev/d/e/f", "/dev/d/e", "/dev/d", "/dev/a", "/dev/b", "/dev/c", "/fs",
+    };
+    for (size_t i = 0U; i < sizeof(cleanup_paths) / sizeof(cleanup_paths[0]); i++)
+    {
+        err = ek_vfs_unregister(cleanup_paths[i]);
+        if (err < 0) EK_LOG_ERROR("unregister %s: %s.", cleanup_paths[i], strerror(-err));
+    }
 
     EK_LOG_INFO("available node: %d", ek_vfs_node_avail());
 }

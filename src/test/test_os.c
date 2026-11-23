@@ -45,7 +45,6 @@ static ek_os_sem_t *s_sem;
 
 static volatile int s_wake_err = -1;
 static volatile bool s_high_ran;
-static volatile bool s_done;
 
 static ek_os_mutex_t *s_mtx;
 static ek_os_mutex_t *s_mtx_a;
@@ -76,20 +75,6 @@ static union
     ek_os_condvar_t align;
     uint8_t buf[EK_OS_CONDVAR_STATIC_BUF_SIZE];
 } s_static_cv_mem;
-
-#    define OS_CHECK(cond, msg)                  \
-        do                                       \
-        {                                        \
-            if (cond)                            \
-            {                                    \
-                EK_LOG_INFO("PASS: %s", (msg));  \
-            }                                    \
-            else                                 \
-            {                                    \
-                EK_LOG_ERROR("FAIL: %s", (msg)); \
-                s_done = true;                   \
-            }                                    \
-        } while (0)
 
 /* 阻塞在信号量上的等待者 */
 static void *_sem_waiter(void *arg)
@@ -1253,6 +1238,11 @@ static void *_test_main(void *arg)
 {
     (void)arg;
 
+    // 复位跨轮次共享状态，支持重复运行
+    s_done = false;
+    s_wake_err = -1;
+    s_high_ran = false;
+
     EK_LOG_INFO("os_main started");
 
     /* ---- 0. DWT 时间源必须递增 ---- */
@@ -1295,6 +1285,8 @@ static void *_test_main(void *arg)
     OS_CHECK(s_wake_err == 0, "waiter woken by give");
     OS_CHECK(join_err == 0 && (int)(intptr_t)join_ret == 42, "join returns child exit code 42");
     OS_CHECK(ek_os_thread_join(waiter_tid, 0, NULL) == -ESRCH, "re-join returns -ESRCH");
+    ek_os_sem_destroy(s_sem);
+    s_sem = NULL;
 
     /* ---- 3. 优先级抢占（兼测先死后 join） ---- */
     s_high_ran = false;
@@ -1333,10 +1325,10 @@ static void *_test_main(void *arg)
     OS_CHECK(ek_os_thread_join(conf_tid, -1, &conf_ret) == 0 && (int)(intptr_t)conf_ret == 0,
              "conformance test passed");
 
-    EK_LOG_INFO("os_test finished: %s", s_done ? "FAILED" : "ALL PASS");
-    s_done = true;
+    bool failed = s_done;
+    EK_LOG_INFO("os_test finished: %s", failed ? "FAILED" : "ALL PASS");
 
-    return NULL;
+    return (void *)(intptr_t)(failed ? -1 : 0);
 }
 
 void os_test(void)
@@ -1345,10 +1337,27 @@ void os_test(void)
     EK_LOG_INFO("os_test: create os_main tid=%d", tid);
 }
 
+int os_test_run(void)
+{
+    int tid = ek_os_thread_create("os_main", _test_main, NULL, PRIO_MID, 1024);
+    if (tid < 0) return tid;
+
+    void *ret = NULL;
+    int err = ek_os_thread_join(tid, EK_OS_FOREVER, &ret);
+    if (err < 0) return err;
+
+    return (int)(intptr_t)ret;
+}
+
 #else
 
 void os_test(void)
 {
+}
+
+int os_test_run(void)
+{
+    return 0;
 }
 
 #endif /* EKCFG_RTOS == 1 */
