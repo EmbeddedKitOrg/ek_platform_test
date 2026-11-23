@@ -22,13 +22,22 @@ set(EK_BENCH_TM "OFF" CACHE STRING "Thread-Metric benchmark case: OFF|basic|coop
 set(EK_BENCH_TM_DURATION "30" CACHE STRING "Thread-Metric report interval in seconds")
 set(EK_BENCH_LM "OFF" CACHE BOOL "Build Zephyr-style latency_measure micro-benchmark")
 set(EK_BENCH_LM_ITERS "1000" CACHE STRING "Default iteration count for latency_measure")
+set(EK_TEST_STACKOVERFLOW "OFF" CACHE BOOL "Build RTOS stack overflow & high-water-mark test")
 
 if(NOT EK_BENCH_TM STREQUAL "OFF" AND EK_BENCH_LM)
     message(FATAL_ERROR "EK_BENCH_TM and EK_BENCH_LM cannot be enabled simultaneously")
 endif()
 
+if(EK_TEST_STACKOVERFLOW AND (NOT EK_BENCH_TM STREQUAL "OFF" OR EK_BENCH_LM))
+    message(FATAL_ERROR "EK_TEST_STACKOVERFLOW cannot be enabled with benchmarks")
+endif()
+
 # 创建可执行文件目标
 add_executable(${CMAKE_PROJECT_NAME} ${SRCS})
+
+if(EK_TEST_STACKOVERFLOW)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE EK_RUN_STACKOVERFLOW_TEST=1)
+endif()
 
 # 按需接入 latency_measure 微基准测试
 if(EK_BENCH_LM)

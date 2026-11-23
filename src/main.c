@@ -57,6 +57,10 @@ int main(void)
     extern void lm_main(void);
     EK_LOG_INFO("main: starting latency_measure benchmark");
     lm_main();
+#    elif defined(EK_RUN_STACKOVERFLOW_TEST)
+    EK_LOG_INFO("main: starting stack overflow test");
+    os_stackoverflow_test();
+    ek_os_kernel_start(&g_bsp_os_timer_ops);
 #    else
     os_test(); /* 创建自检线程，内核启动后才开始运行 */
     EK_LOG_INFO("main: os_test done, starting kernel");

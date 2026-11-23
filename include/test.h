@@ -52,5 +52,6 @@ void vfs_test(void);
 void shell_test(void);
 void os_test(void);
 int os_conformance_test(void);
+void os_stackoverflow_test(void);
 
 #endif // TEST_H

@@ -48,17 +48,18 @@
  * 模块子配置 — 根据实际硬件调整
  * ======================================================================== */
 
-#define EKCFG_ARCH_IRQ_COUNT     (91)
-#define EKCFG_HEAP_TLSF          (1)
-#define EKCFG_HEAP_SIZE          (64 * 1024)
-#define EKCFG_HEAP_SECTION       ".tcmram"
-#define EKCFG_LOG_COLOR          (1)
-#define EKCFG_LOG_BUF_SIZE       (128)
-#define EKCFG_VFS_TREE_DUMP_UTF8 (1)
-#define EKCFG_SHELL              (1)
-#define EKCFG_SHELL_BUF_SIZE     (256)
-#define EKCFG_SHELL_PROMPT       "gd32f470>"
-#define EKCFG_SHELL_UTF8         (1)
-#define EKCFG_SHELL_BUILTIN_CMDS (1)
+#define EKCFG_ARCH_IRQ_COUNT                (91)
+#define EKCFG_HEAP_TLSF                     (1)
+#define EKCFG_HEAP_SIZE                     (64 * 1024)
+#define EKCFG_HEAP_SECTION                  ".tcmram"
+#define EKCFG_LOG_COLOR                     (1)
+#define EKCFG_LOG_BUF_SIZE                  (128)
+#define EKCFG_VFS_TREE_DUMP_UTF8            (1)
+#define EKCFG_SHELL                         (1)
+#define EKCFG_SHELL_BUF_SIZE                (256)
+#define EKCFG_SHELL_PROMPT                  "gd32f470>"
+#define EKCFG_SHELL_UTF8                    (1)
+#define EKCFG_SHELL_BUILTIN_CMDS            (1)
+#define EKCFG_OS_KERNEL_STACKOVERFLOW_CHECK (2) 
 
 #endif /* EK_CONF_H */
