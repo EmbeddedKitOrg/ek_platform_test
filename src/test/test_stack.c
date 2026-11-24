@@ -65,11 +65,25 @@ void stack_test(void)
     ek_stack_destroy(stack);
     TEST_ASSERT_EQ(ek_heap_unused(), unused_before_dyn, "stack destroy leaked memory");
 
+    // 验证局部静态缓冲区的 create_static / destroy 与销毁后拒绝访问
+    alignas(ek_stack_t) uint8_t local_sk_buf[EK_STACK_STATIC_BUF_SIZE(sizeof(int), 2U)];
+    ek_stack_t *local_sk = ek_stack_create_static(local_sk_buf, sizeof(local_sk_buf), sizeof(int), 2U);
+    TEST_ASSERT(local_sk != NULL, "create local static stack failed");
+    TEST_ASSERT(ek_stack_push(local_sk, &extra) == 0, "local static stack push failed");
+    ek_stack_destroy(local_sk);
+    TEST_ASSERT(ek_stack_push(local_sk, &extra) == -ENOENT, "destroyed static stack push should fail");
+    TEST_ASSERT(ek_stack_pop(local_sk, &extra) == -ENOENT, "destroyed static stack pop should fail");
+    TEST_ASSERT(ek_stack_full(local_sk) == false, "destroyed static stack full should return false");
+    TEST_ASSERT(ek_stack_empty(local_sk) == false, "destroyed static stack empty should return false");
+    ek_stack_destroy(local_sk);
+
     // 参数检查：非法参数返回错误码而非断言
     TEST_ASSERT(ek_stack_create(0, 4) == NULL, "create with zero item_size should fail");
     TEST_ASSERT(ek_stack_create(sizeof(int), 0) == NULL, "create with zero amount should fail");
-    TEST_ASSERT(ek_stack_push(NULL, &extra) == -EINVAL, "push to null stack should fail");
-    TEST_ASSERT(ek_stack_pop(NULL, &extra) == -EINVAL, "pop from null stack should fail");
+    TEST_ASSERT(ek_stack_create_static(local_sk_buf, sizeof(local_sk_buf) - 1U, sizeof(int), 2U) == NULL,
+                "create_static with small buf should fail");
+    TEST_ASSERT(ek_stack_push(NULL, &extra) == -ENOENT, "push to null stack should fail");
+    TEST_ASSERT(ek_stack_pop(NULL, &extra) == -ENOENT, "pop from null stack should fail");
     TEST_ASSERT(ek_stack_full(NULL) == false, "null stack full should return false");
     TEST_ASSERT(ek_stack_empty(NULL) == false, "null stack empty should return false");
     ek_stack_destroy(NULL);

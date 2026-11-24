@@ -28,7 +28,7 @@ void snapshot_test(void)
     TEST_ASSERT(ek_snapshot_set(static_snapshot, &tx, 100U) == -EINVAL, "duplicate unique should be rejected");
 
     // 复位静态快照，使本测试用例支持通过命令反复执行
-    TEST_ASSERT(ek_snapshot_init_static(static_snapshot, 16U) == 0, "static snapshot reset failed");
+    TEST_ASSERT(ek_snapshot_set(static_snapshot, &tx, 0U) == 0, "static snapshot reset failed");
 
     TEST_ASSERT_EQ(ek_heap_unused(), unused_before, "static snapshot used heap");
     EK_LOG_INFO("static snapshot test passed");
@@ -58,10 +58,23 @@ void snapshot_test(void)
     ek_snapshot_destroy(snap);
     TEST_ASSERT_EQ(ek_heap_unused(), unused_before_dyn, "snapshot destroy leaked memory");
 
+    // 验证局部静态缓冲区的 create_static / destroy 与销毁后拒绝访问
+    alignas(ek_snapshot_t) uint8_t local_snap_buf[EK_SNAPSHOT_STATIC_BUF_SIZE(sizeof(student_t))];
+    ek_snapshot_t *local_snap = ek_snapshot_create_static(local_snap_buf, sizeof(local_snap_buf), sizeof(student_t));
+    TEST_ASSERT(local_snap != NULL, "create local static snapshot failed");
+    TEST_ASSERT(ek_snapshot_set(local_snap, &tx, 300U) == 0, "local static snapshot set failed");
+    ek_snapshot_destroy(local_snap);
+    TEST_ASSERT(ek_snapshot_set(local_snap, &tx, 301U) == -ENOENT, "destroyed static snapshot set should fail");
+    TEST_ASSERT(ek_snapshot_get(local_snap, &rx) == -ENOENT, "destroyed static snapshot get should fail");
+    TEST_ASSERT_EQ(ek_snapshot_get_unique(local_snap), 0U, "destroyed static snapshot unique should be 0");
+    ek_snapshot_destroy(local_snap);
+
     // 参数检查：非法参数返回错误码而非断言
     TEST_ASSERT(ek_snapshot_create(0) == NULL, "create with zero size should fail");
-    TEST_ASSERT(ek_snapshot_set(NULL, &tx, 1U) == -EINVAL, "set on null snapshot should fail");
-    TEST_ASSERT(ek_snapshot_get(NULL, &rx) == -EINVAL, "get from null snapshot should fail");
+    TEST_ASSERT(ek_snapshot_create_static(local_snap_buf, sizeof(local_snap_buf) - 1U, sizeof(student_t)) == NULL,
+                "create_static with small buf should fail");
+    TEST_ASSERT(ek_snapshot_set(NULL, &tx, 1U) == -ENOENT, "set on null snapshot should fail");
+    TEST_ASSERT(ek_snapshot_get(NULL, &rx) == -ENOENT, "get from null snapshot should fail");
     TEST_ASSERT_EQ(ek_snapshot_get_unique(NULL), 0U, "null snapshot unique should be 0");
     ek_snapshot_destroy(NULL);
 

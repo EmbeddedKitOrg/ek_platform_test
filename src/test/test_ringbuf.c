@@ -81,15 +81,46 @@ void ringbuf_test(void)
     ek_ringbuf_destroy(rb);
     TEST_ASSERT_EQ(ek_heap_unused(), unused_before_dyn, "ringbuf destroy leaked memory");
 
+    // 验证局部静态缓冲区的 create_static / destroy 与销毁后拒绝访问
+    alignas(ek_ringbuf_t) uint8_t local_rb_buf[EK_RINGBUF_STATIC_BUF_SIZE(sizeof(int), 2U)];
+    ek_ringbuf_t *local_rb = ek_ringbuf_create_static(local_rb_buf, sizeof(local_rb_buf), sizeof(int), 2U);
+    TEST_ASSERT(local_rb != NULL, "create local static ringbuf failed");
+    TEST_ASSERT(ek_ringbuf_write(local_rb, &extra) == 0, "local static ringbuf write failed");
+    ek_ringbuf_destroy(local_rb);
+    TEST_ASSERT(ek_ringbuf_write(local_rb, &extra) == -ENOENT, "destroyed static ringbuf write should fail");
+    TEST_ASSERT(ek_ringbuf_read(local_rb, &extra) == -ENOENT, "destroyed static ringbuf read should fail");
+    TEST_ASSERT(ek_ringbuf_peek(local_rb, &extra) == -ENOENT, "destroyed static ringbuf peek should fail");
+    TEST_ASSERT(ek_ringbuf_full(local_rb) == false, "destroyed static ringbuf full should return false");
+    TEST_ASSERT(ek_ringbuf_empty(local_rb) == false, "destroyed static ringbuf empty should return false");
+    ek_ringbuf_destroy(local_rb);
+
+    alignas(ek_ringbuf_spsc_t) uint8_t local_spsc_buf[EK_RINGBUF_SPSC_STATIC_BUF_SIZE(sizeof(int), 3U)];
+    ek_ringbuf_spsc_t *local_spsc =
+        ek_ringbuf_create_spsc_static(local_spsc_buf, sizeof(local_spsc_buf), sizeof(int), 3U);
+    TEST_ASSERT(local_spsc != NULL, "create local static spsc failed");
+    TEST_ASSERT(ek_ringbuf_write_spsc(local_spsc, &extra) == 0, "local static spsc write failed");
+    ek_ringbuf_destroy_spsc(local_spsc);
+    TEST_ASSERT(ek_ringbuf_write_spsc(local_spsc, &extra) == -ENOENT, "destroyed static spsc write should fail");
+    TEST_ASSERT(ek_ringbuf_read_spsc(local_spsc, &extra) == -ENOENT, "destroyed static spsc read should fail");
+    TEST_ASSERT(ek_ringbuf_peek_spsc(local_spsc, &extra) == -ENOENT,
+                "destroyed static spsc peek should return -ENOENT");
+    TEST_ASSERT(ek_ringbuf_full_spsc(local_spsc) == false, "destroyed static spsc full should return false");
+    TEST_ASSERT(ek_ringbuf_empty_spsc(local_spsc) == false, "destroyed static spsc empty should return false");
+    ek_ringbuf_destroy_spsc(local_spsc);
+
     // 参数检查：非法参数返回错误码而非断言
     TEST_ASSERT(ek_ringbuf_create(sizeof(int), 0) == NULL, "create with zero amount should fail");
     TEST_ASSERT(ek_ringbuf_create_spsc(sizeof(int), 1) == NULL, "spsc create with amount<=1 should fail");
-    TEST_ASSERT(ek_ringbuf_write(NULL, &extra) == -EINVAL, "write to null ringbuf should fail");
-    TEST_ASSERT(ek_ringbuf_read(NULL, &extra) == -EINVAL, "read from null ringbuf should fail");
-    TEST_ASSERT(ek_ringbuf_peek(NULL, &extra) == -EINVAL, "peek null ringbuf should fail");
+    TEST_ASSERT(ek_ringbuf_create_static(local_rb_buf, sizeof(local_rb_buf) - 1U, sizeof(int), 2U) == NULL,
+                "create_static with small buf should fail");
+    TEST_ASSERT(ek_ringbuf_create_spsc_static(local_spsc_buf, sizeof(local_spsc_buf) - 1U, sizeof(int), 3U) == NULL,
+                "spsc create_static with small buf should fail");
+    TEST_ASSERT(ek_ringbuf_write(NULL, &extra) == -ENOENT, "write to null ringbuf should fail");
+    TEST_ASSERT(ek_ringbuf_read(NULL, &extra) == -ENOENT, "read from null ringbuf should fail");
+    TEST_ASSERT(ek_ringbuf_peek(NULL, &extra) == -ENOENT, "peek null ringbuf should fail");
     TEST_ASSERT(ek_ringbuf_full(NULL) == false, "null ringbuf full should return false");
     TEST_ASSERT(ek_ringbuf_empty(NULL) == false, "null ringbuf empty should return false");
-    TEST_ASSERT(ek_ringbuf_write_spsc(NULL, &extra) == -EINVAL, "spsc write to null should fail");
+    TEST_ASSERT(ek_ringbuf_write_spsc(NULL, &extra) == -ENOENT, "spsc write to null should fail");
     ek_ringbuf_destroy(NULL);
     ek_ringbuf_destroy_spsc(NULL);
 

@@ -94,9 +94,9 @@ static void _test_controller(ek_pt_t *pt, void *arg)
 void picothread_test_init(void)
 {
     TEST_ASSERT(ek_static_alloc_get_init_error() == 0, "static alloc init failed");
-    TEST_ASSERT((uint8_t *)static_msg->rb.data == (uint8_t *)static_msg + sizeof(*static_msg),
+    TEST_ASSERT((uint8_t *)static_msg->rb->data == (uint8_t *)static_msg->rb + sizeof(*static_msg->rb),
                 "static msg data not inline");
-    TEST_ASSERT_EQ(static_msg->rb.cap, 3U, "static msg cap mismatch");
+    TEST_ASSERT_EQ(static_msg->rb->cap, 3U, "static msg cap mismatch");
     TEST_ASSERT(static_pt.cb == _static_pt_cb, "static pt cb mismatch");
     TEST_ASSERT_EQ(static_pt.prio, 10U, "static pt prio mismatch");
     TEST_ASSERT_EQ(static_sem.count, 1U, "static sem count mismatch");
@@ -134,7 +134,7 @@ void picothread_test_init(void)
 #if EKCFG_PICOTHREAD_MSG == 1
     s_test_msg = ek_pt_msg_create(sizeof(int), 3);
     TEST_ASSERT(s_test_msg != NULL, "create test msg failed");
-    TEST_ASSERT((uint8_t *)s_test_msg->rb.data == (uint8_t *)s_test_msg + sizeof(*s_test_msg),
+    TEST_ASSERT((uint8_t *)s_test_msg->rb->data == (uint8_t *)s_test_msg->rb + sizeof(*s_test_msg->rb),
                 "dynamic msg data not inline");
     s_sender = ek_pt_create(_msg_sender, 10, NULL);
     s_receiver = ek_pt_create(_msg_receiver, 10, NULL);
