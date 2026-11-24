@@ -56,40 +56,100 @@ static inline void _set_fpscr(uint32_t fpscr)
 
 // 装载全部 32 个单精度浮点寄存器后自旋等待外部抢占计数达标，随后一次性读回校验
 __attribute__((noinline)) static void _fpu_hold_regs_until(const uint32_t in_regs[32],
-                                                             uint32_t out_regs[32],
-                                                             volatile uint32_t *counter,
-                                                             uint32_t target,
-                                                             volatile bool *armed)
+                                                           uint32_t out_regs[32],
+                                                           volatile uint32_t *counter,
+                                                           uint32_t target,
+                                                           volatile bool *armed)
 {
     uint32_t tmp;
     uint32_t one = 1U;
 
     __EK_ASM("vldmia %[in], {s0-s31}\n\t"
-                      "dmb sy\n\t"
-                      "strb %[one], [%[arm]]\n\t"
-                      "1:\n\t"
-                      "ldr %[tmp], [%[cnt]]\n\t"
-                      "cmp %[tmp], %[tgt]\n\t"
-                      "bcc 1b\n\t"
-                      "vstmia %[out], {s0-s31}\n\t"
-                      : [tmp] "=&r"(tmp)
-                      : [in] "r"(in_regs), [out] "r"(out_regs), [cnt] "r"(counter), [tgt] "r"(target),
-                        [arm] "r"(armed), [one] "r"(one)
-                      : "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s13", "s14",
-                        "s15", "s16", "s17", "s18", "s19", "s20", "s21", "s22", "s23", "s24", "s25", "s26", "s27", "s28",
-                        "s29", "s30", "s31", "cc", "memory");
+             "dmb sy\n\t"
+             "strb %[one], [%[arm]]\n\t"
+             "1:\n\t"
+             "ldr %[tmp], [%[cnt]]\n\t"
+             "cmp %[tmp], %[tgt]\n\t"
+             "bcc 1b\n\t"
+             "vstmia %[out], {s0-s31}\n\t" : [tmp] "=&r"(tmp) : [in] "r"(in_regs),
+             [out] "r"(out_regs),
+             [cnt] "r"(counter),
+             [tgt] "r"(target),
+             [arm] "r"(armed),
+             [one] "r"(one) : "s0",
+             "s1",
+             "s2",
+             "s3",
+             "s4",
+             "s5",
+             "s6",
+             "s7",
+             "s8",
+             "s9",
+             "s10",
+             "s11",
+             "s12",
+             "s13",
+             "s14",
+             "s15",
+             "s16",
+             "s17",
+             "s18",
+             "s19",
+             "s20",
+             "s21",
+             "s22",
+             "s23",
+             "s24",
+             "s25",
+             "s26",
+             "s27",
+             "s28",
+             "s29",
+             "s30",
+             "s31",
+             "cc",
+             "memory");
 }
 
 // 用另一套模式彻底覆写全部 s0-s31 浮点寄存器并执行一次向量写回自检
 __attribute__((noinline)) static void _fpu_clobber_regs(const uint32_t pattern[32], uint32_t verify_out[32])
 {
     __EK_ASM("vldmia %[pat], {s0-s31}\n\t"
-                      "vstmia %[out], {s0-s31}\n\t"
-                      :
-                      : [pat] "r"(pattern), [out] "r"(verify_out)
-                      : "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s13", "s14",
-                        "s15", "s16", "s17", "s18", "s19", "s20", "s21", "s22", "s23", "s24", "s25", "s26", "s27", "s28",
-                        "s29", "s30", "s31", "memory");
+             "vstmia %[out], {s0-s31}\n\t" : : [pat] "r"(pattern),
+             [out] "r"(verify_out) : "s0",
+             "s1",
+             "s2",
+             "s3",
+             "s4",
+             "s5",
+             "s6",
+             "s7",
+             "s8",
+             "s9",
+             "s10",
+             "s11",
+             "s12",
+             "s13",
+             "s14",
+             "s15",
+             "s16",
+             "s17",
+             "s18",
+             "s19",
+             "s20",
+             "s21",
+             "s22",
+             "s23",
+             "s24",
+             "s25",
+             "s26",
+             "s27",
+             "s28",
+             "s29",
+             "s30",
+             "s31",
+             "memory");
 }
 
 static void *_fpu_victim_thread(void *arg)
@@ -324,8 +384,10 @@ int fpu_test(void)
     s_rm_up_done = 0U;
     s_rm_dn_done = 0U;
 
-    int tid_up = ek_os_thread_create("fpu_rp", _fpu_rmode_worker, (void *)(uintptr_t)1U, FPU_PRIO_COLLAB, FPU_TEST_STACK_SIZE);
-    int tid_dn = ek_os_thread_create("fpu_rm", _fpu_rmode_worker, (void *)(uintptr_t)2U, FPU_PRIO_COLLAB, FPU_TEST_STACK_SIZE);
+    int tid_up =
+        ek_os_thread_create("fpu_rp", _fpu_rmode_worker, (void *)(uintptr_t)1U, FPU_PRIO_COLLAB, FPU_TEST_STACK_SIZE);
+    int tid_dn =
+        ek_os_thread_create("fpu_rm", _fpu_rmode_worker, (void *)(uintptr_t)2U, FPU_PRIO_COLLAB, FPU_TEST_STACK_SIZE);
     if (tid_up < 0 || tid_dn < 0)
     {
         EK_LOG_ERROR("FAIL: create rmode worker threads (%d, %d)", tid_up, tid_dn);
