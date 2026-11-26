@@ -62,5 +62,6 @@
 #define EKCFG_SHELL_UTF8                    (1)
 #define EKCFG_SHELL_BUILTIN_CMDS            (1)
 #define EKCFG_OS_KERNEL_STACKOVERFLOW_CHECK (2)
+#define EKCFG_OS_ISR_WORKQ                  (1)
 
 #endif /* EK_CONF_H */

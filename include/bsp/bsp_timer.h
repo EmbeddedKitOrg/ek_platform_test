@@ -9,6 +9,8 @@
 
 void bsp_schedule_timer_init(void);
 void bsp_schedule_timer_set_once(uint16_t tick);
+#if !(EKCFG_RTOS == 1 && EKCFG_OS_ISR_WORKQ == 1)
 void bsp_schedule_timer_irq_handler(void);
+#endif
 
 #endif // BSP_TIMER_H

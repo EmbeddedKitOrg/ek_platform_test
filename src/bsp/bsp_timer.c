@@ -3,6 +3,10 @@
 #include "ek/core/arch.h"
 #include "ek/core/log.h"
 
+#if EKCFG_RTOS == 1 && EKCFG_OS_ISR_WORKQ == 1
+#    include "ek/os/workq.h"
+#endif
+
 EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_WARN);
 
 void bsp_schedule_timer_init(void)
@@ -36,6 +40,22 @@ void bsp_schedule_timer_set_once(uint16_t tick)
     timer_enable(BSP_SCHEDULE_TIMER);
 }
 
+#if EKCFG_RTOS == 1 && EKCFG_OS_ISR_WORKQ == 1
+static bool _schedule_timer_top(void)
+{
+    if (timer_interrupt_flag_get(BSP_SCHEDULE_TIMER, TIMER_INT_FLAG_UP) == RESET) return false;
+    timer_interrupt_flag_clear(BSP_SCHEDULE_TIMER, TIMER_INT_FLAG_UP);
+    return true;
+}
+
+static void _schedule_timer_bottom(ek_os_work_t *work)
+{
+    __EK_UNUSED(work);
+    EK_LOG_INFO("timer irq evoke");
+}
+
+EK_DEFINE_OS_WORKQ_ISR(BSP_SCHEDULE_TIMER_IRQ, _schedule_timer_top, _schedule_timer_bottom);
+#else
 void bsp_schedule_timer_irq_handler(void)
 {
     if (timer_interrupt_flag_get(BSP_SCHEDULE_TIMER, TIMER_INT_FLAG_UP))
@@ -46,3 +66,4 @@ void bsp_schedule_timer_irq_handler(void)
 }
 
 EK_DEFINE_ARCH_IRQ(BSP_SCHEDULE_TIMER_IRQ, bsp_schedule_timer_irq_handler);
+#endif
