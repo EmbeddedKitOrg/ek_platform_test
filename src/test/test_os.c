@@ -7,6 +7,7 @@
 
 #if EKCFG_RTOS == 1
 
+#    include "ek/core/arch.h"
 #    include "ek/os/barrier.h"
 #    include "ek/os/condvar.h"
 #    include "ek/os/kernel.h"
@@ -15,6 +16,7 @@
 #    include "ek/os/mutex.h"
 #    include "ek/os/sem.h"
 #    include "ek/os/thread.h"
+#    include "ek/os/workq.h"
 
 EK_LOG_MODULE(__FILE_NAME__, EK_LOG_LEVEL_DEBUG);
 
@@ -1228,6 +1230,466 @@ static void *_kfifo_main(void *arg)
     return NULL;
 }
 
+typedef struct
+{
+    ek_os_work_t work;
+    int id;
+} wq_seq_item_t;
+
+typedef struct
+{
+    ek_os_work_delay_t dwork;
+    int id;
+    uint64_t exec_us;
+} wq_delay_item_t;
+
+typedef struct
+{
+    ek_os_work_t work;
+    ek_os_workq_t *wq;
+    int count;
+    int max_count;
+} wq_resubmit_ctx_t;
+
+typedef struct
+{
+    ek_os_work_t work;
+    ek_os_workq_t *wq;
+    ek_os_sem_t *started_sem;
+    ek_os_sem_t *gate_sem;
+    int resubmit_err;
+} wq_blocker_ctx_t;
+
+static volatile int s_wq_seq[8];
+static volatile int s_wq_seq_idx;
+static volatile bool s_wq_cancelled_ran;
+static volatile bool s_wq_self_checked;
+static volatile int s_wq_self_flush_err;
+static volatile int s_wq_self_cancel_err;
+static volatile int s_wq_cancel_sync_ret;
+static ek_os_work_t *s_wq_cancel_target;
+static ek_os_workq_t *s_wq_self_q;
+
+static union
+{
+    ek_os_workq_t workq;
+    uint64_t align;
+    uint8_t buf[EK_OS_WORKQ_STATIC_BUF_SIZE(TEST_STACK)];
+} s_static_wq_mem;
+
+#    if EKCFG_STATIC_ALLOC == 1
+EK_DEFINE_OS_WORKQ(s_def_workq, PRIO_MID, TEST_STACK);
+#    endif
+
+#    if EKCFG_OS_ISR_WORKQ == 1
+#        define WQ_SW_IRQn CAN1_RX1_IRQn
+static volatile bool s_wq_isr_emit;
+static volatile int s_wq_isr_top_cnt;
+static volatile int s_wq_isr_bottom_cnt;
+static volatile bool s_wq_isr_in_thread;
+static volatile int s_wq_isr_bottom_tid;
+static ek_os_sem_t *s_wq_isr_sem;
+
+static bool _wq_sw_isr_top(void)
+{
+    NVIC_ClearPendingIRQ(WQ_SW_IRQn);
+    s_wq_isr_top_cnt++;
+    return s_wq_isr_emit;
+}
+
+static void _wq_sw_isr_bottom(ek_os_work_t *work)
+{
+    (void)work;
+    s_wq_isr_in_thread = !ek_arch_in_isr();
+    s_wq_isr_bottom_tid = ek_os_kernel_current_tid();
+    s_wq_isr_bottom_cnt++;
+    if (s_wq_isr_sem) ek_os_sem_give(s_wq_isr_sem);
+}
+
+EK_DEFINE_OS_WORKQ_ISR(WQ_SW_IRQn, _wq_sw_isr_top, _wq_sw_isr_bottom);
+#    endif
+
+static void _wq_seq_cb(ek_os_work_t *work)
+{
+    wq_seq_item_t *item = EK_CONTAINER_OF(work, wq_seq_item_t, work);
+    if (s_wq_seq_idx < 8)
+    {
+        s_wq_seq[s_wq_seq_idx++] = item->id;
+    }
+}
+
+static void _wq_delay_cb(ek_os_work_t *work)
+{
+    ek_os_work_delay_t *dw = EK_CONTAINER_OF(work, ek_os_work_delay_t, work);
+    wq_delay_item_t *item = EK_CONTAINER_OF(dw, wq_delay_item_t, dwork);
+    item->exec_us = ek_os_kernel_time();
+    if (s_wq_seq_idx < 8)
+    {
+        s_wq_seq[s_wq_seq_idx++] = item->id;
+    }
+}
+
+static void _wq_resubmit_cb(ek_os_work_t *work)
+{
+    wq_resubmit_ctx_t *ctx = EK_CONTAINER_OF(work, wq_resubmit_ctx_t, work);
+    ctx->count++;
+    if (ctx->count < ctx->max_count)
+    {
+        ek_os_workq_submit(ctx->wq, work);
+    }
+}
+
+static void _wq_cancelled_cb(ek_os_work_t *work)
+{
+    (void)work;
+    s_wq_cancelled_ran = true;
+}
+
+static void _wq_blocker_cb(ek_os_work_t *work)
+{
+    wq_blocker_ctx_t *ctx = EK_CONTAINER_OF(work, wq_blocker_ctx_t, work);
+    ek_os_sem_give(ctx->started_sem);
+    ek_os_sem_take(ctx->gate_sem, EK_OS_FOREVER);
+    ctx->resubmit_err = ek_os_workq_submit(ctx->wq, work);
+}
+
+static void _wq_self_check_cb(ek_os_work_t *work)
+{
+    s_wq_self_flush_err = ek_os_workq_flush(s_wq_self_q, 0);
+    s_wq_self_cancel_err = ek_os_workq_cancel_sync(work, EK_OS_FOREVER);
+    s_wq_self_checked = true;
+}
+
+static void _wq_short_sleep_cb(ek_os_work_t *work)
+{
+    (void)work;
+    ek_os_thread_sleep(15000);
+}
+
+static void *_wq_canceller_thread(void *arg)
+{
+    (void)arg;
+    s_wq_cancel_sync_ret = ek_os_workq_cancel_sync(s_wq_cancel_target, EK_OS_FOREVER);
+    return NULL;
+}
+
+static void _workq_test(void)
+{
+    ek_os_work_t bad_w = { 0 };
+    ek_os_work_delay_t bad_dw = { 0 };
+
+    /* 1. 参数与无效句柄边界 */
+    OS_CHECK(ek_os_work_init(NULL, _wq_seq_cb) == -ENOENT, "work_init(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_work_init(&bad_w, NULL) == -EINVAL, "work_init(NULL fn) returns -EINVAL");
+    OS_CHECK(ek_os_work_delay_init(NULL, _wq_delay_cb) == -ENOENT, "work_delay_init(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_work_delay_init(&bad_dw, NULL) == -EINVAL, "work_delay_init(NULL fn) returns -EINVAL");
+    OS_CHECK(ek_os_work_state(NULL) == -ENOENT, "work_state(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_workq_create(NULL, PRIO_MID, TEST_STACK) == NULL, "workq_create(NULL name) returns NULL");
+    OS_CHECK(ek_os_workq_create("wq_tiny", PRIO_MID, EKCFG_OS_THREAD_MIN_STACK - 1U) == NULL,
+             "workq_create undersized stack returns NULL");
+    OS_CHECK(ek_os_workq_submit(NULL, &bad_w) == -ENOENT, "workq_submit(NULL wq) returns -ENOENT");
+    OS_CHECK(ek_os_workq_schedule(NULL, &bad_dw, 0) == -ENOENT, "workq_schedule(NULL wq) returns -ENOENT");
+    OS_CHECK(ek_os_workq_reschedule(NULL, &bad_dw, 0) == -ENOENT, "workq_reschedule(NULL wq) returns -ENOENT");
+    OS_CHECK(ek_os_workq_cancel(NULL) == -ENOENT, "workq_cancel(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_workq_cancel_sync(NULL, 0) == -ENOENT, "workq_cancel_sync(NULL) returns -ENOENT");
+    OS_CHECK(ek_os_workq_flush(NULL, 0) == -ENOENT, "workq_flush(NULL) returns -ENOENT");
+
+    ek_os_workq_t *wq = ek_os_workq_create("wq_dyn", PRIO_MID, TEST_STACK);
+    OS_CHECK(wq != NULL, "workq_create");
+    if (!wq)
+    {
+        s_done = true;
+        return;
+    }
+
+    OS_CHECK(ek_os_workq_submit(wq, NULL) == -ENOENT, "workq_submit(NULL work) returns -ENOENT");
+    OS_CHECK(ek_os_workq_submit(wq, &bad_w) == -EINVAL, "workq_submit(NULL fn) returns -EINVAL");
+    OS_CHECK(ek_os_workq_schedule(wq, &bad_dw, 0) == -EINVAL, "workq_schedule(NULL fn) returns -EINVAL");
+    OS_CHECK(ek_os_workq_reschedule(wq, &bad_dw, 0) == -EINVAL, "workq_reschedule(NULL fn) returns -EINVAL");
+    OS_CHECK(ek_os_workq_flush(wq, 0) == 0, "workq_flush(0) on empty queue returns 0");
+
+    /* 2. FIFO 顺序执行与 flush 排空 */
+    wq_seq_item_t items[3];
+    s_wq_seq_idx = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        s_wq_seq[i] = 0;
+        items[i].id = i + 1;
+        OS_CHECK(ek_os_work_init(&items[i].work, _wq_seq_cb) == 0, "work_init");
+        OS_CHECK(ek_os_work_state(&items[i].work) == 0, "fresh work state is 0");
+        OS_CHECK(ek_os_workq_submit(wq, &items[i].work) == 0, "workq_submit");
+    }
+
+    OS_CHECK(ek_os_workq_flush(wq, EK_OS_FOREVER) == 0, "workq_flush waits all submitted works");
+    OS_CHECK(s_wq_seq_idx == 3 && s_wq_seq[0] == 1 && s_wq_seq[1] == 2 && s_wq_seq[2] == 3,
+             "workq executes items in FIFO order");
+    OS_CHECK(ek_os_work_state(&items[0].work) == 0, "completed work state returns 0");
+
+    /* 3. 回调内部自重提交（验证运行态不写 RUNNING 位允许回调末重入） */
+    wq_resubmit_ctx_t rctx = { .wq = wq, .count = 0, .max_count = 3 };
+    ek_os_work_init(&rctx.work, _wq_resubmit_cb);
+    OS_CHECK(ek_os_workq_submit(wq, &rctx.work) == 0, "submit self-resubmitting work");
+    for (int i = 0; i < 40 && rctx.count < rctx.max_count; i++)
+    {
+        ek_os_thread_sleep(1000);
+    }
+    OS_CHECK(ek_os_workq_flush(wq, EK_OS_FOREVER) == 0 && rctx.count == 3,
+             "work self-resubmits inside callback 3 times");
+
+    /* 4. 延时调度：delay<=0 立即执行、队头抢占唤醒、reschedule 重排 */
+    wq_delay_item_t d_imm = { .id = 10 };
+    s_wq_seq_idx = 0;
+    ek_os_work_delay_init(&d_imm.dwork, _wq_delay_cb);
+    OS_CHECK(ek_os_workq_schedule(wq, &d_imm.dwork, 0) == 0, "workq_schedule(delay=0) submits immediately");
+    OS_CHECK(ek_os_workq_flush(wq, EK_OS_FOREVER) == 0 && s_wq_seq_idx == 1 && s_wq_seq[0] == 10,
+             "schedule(0) executes immediately");
+
+    wq_delay_item_t d_late = { .id = 20, .exec_us = 0 };
+    wq_delay_item_t d_early = { .id = 21, .exec_us = 0 };
+    s_wq_seq_idx = 0;
+    ek_os_work_delay_init(&d_late.dwork, _wq_delay_cb);
+    ek_os_work_delay_init(&d_early.dwork, _wq_delay_cb);
+
+    uint64_t t_sched = ek_os_kernel_time();
+    OS_CHECK(ek_os_workq_schedule(wq, &d_late.dwork, EK_OS_MSEC(30)) == 0, "schedule late dwork (30ms)");
+    OS_CHECK(ek_os_workq_schedule(wq, &d_late.dwork, EK_OS_MSEC(10)) == -EBUSY,
+             "duplicate schedule returns -EBUSY");
+    // 较早到期的节点后插入，应抢占延时队头并唤醒工作线程重算超时
+    OS_CHECK(ek_os_workq_schedule(wq, &d_early.dwork, EK_OS_MSEC(10)) == 0, "schedule early dwork (10ms)");
+    OS_CHECK(ek_os_work_state(&d_early.dwork.work) == EK_OS_WORK_DELAYED, "delayed work reports EK_OS_WORK_DELAYED");
+
+    ek_os_thread_sleep(45000);
+    OS_CHECK(s_wq_seq_idx == 2 && s_wq_seq[0] == 21 && s_wq_seq[1] == 20, "delayed items execute by deadline order");
+    OS_CHECK((d_early.exec_us - t_sched) >= 8000ULL && (d_late.exec_us - t_sched) >= 28000ULL,
+             "delayed deadlines respected");
+
+    wq_delay_item_t d_resched = { .id = 30, .exec_us = 0 };
+    s_wq_seq_idx = 0;
+    ek_os_work_delay_init(&d_resched.dwork, _wq_delay_cb);
+    t_sched = ek_os_kernel_time();
+    OS_CHECK(ek_os_workq_schedule(wq, &d_resched.dwork, EK_OS_MSEC(40)) == 0, "schedule dwork for reschedule");
+    ek_os_thread_sleep(5000);
+    OS_CHECK(ek_os_workq_reschedule(wq, &d_resched.dwork, EK_OS_MSEC(5)) == 0,
+             "reschedule moves deadline earlier to 5ms");
+    ek_os_thread_sleep(15000);
+    OS_CHECK(s_wq_seq_idx == 1 && s_wq_seq[0] == 30 && (d_resched.exec_us - t_sched) < 25000ULL,
+             "rescheduled work executes at new deadline");
+
+    /* 5. 非阻塞 cancel、运行中 cancel_sync、flush 超时与 -EDEADLK 自检测 */
+    ek_os_sem_t *started_sem = ek_os_sem_create(0);
+    ek_os_sem_t *gate_sem = ek_os_sem_create(0);
+    OS_CHECK(started_sem != NULL && gate_sem != NULL, "create sync sems for cancel test");
+    if (started_sem && gate_sem)
+    {
+        wq_blocker_ctx_t bctx = {
+            .wq = wq,
+            .started_sem = started_sem,
+            .gate_sem = gate_sem,
+            .resubmit_err = 0,
+        };
+        ek_os_work_init(&bctx.work, _wq_blocker_cb);
+
+        ek_os_work_t pending_w;
+        ek_os_work_delay_t delayed_dw;
+        s_wq_cancelled_ran = false;
+        ek_os_work_init(&pending_w, _wq_cancelled_cb);
+        ek_os_work_delay_init(&delayed_dw, _wq_cancelled_cb);
+
+        OS_CHECK(ek_os_workq_submit(wq, &bctx.work) == 0, "submit blocker work");
+        OS_CHECK(ek_os_sem_take(started_sem, EK_OS_MSEC(100)) == 0, "wait blocker started");
+        OS_CHECK(ek_os_work_state(&bctx.work) == EK_OS_WORK_RUNNING, "running work reports EK_OS_WORK_RUNNING");
+
+        // 工作线程正被 blocker 占住，此时排队中的 work 可被非阻塞取消
+        OS_CHECK(ek_os_workq_submit(wq, &pending_w) == 0, "submit pending work behind blocker");
+        OS_CHECK(ek_os_work_state(&pending_w) == EK_OS_WORK_PENDING, "pending work reports EK_OS_WORK_PENDING");
+        OS_CHECK(ek_os_workq_schedule(wq, &delayed_dw, EK_OS_MSEC(20)) == 0, "schedule delayed work behind blocker");
+        OS_CHECK(ek_os_workq_cancel(&pending_w) == 0 && ek_os_work_state(&pending_w) == 0,
+                 "cancel removes pending work cleanly");
+        OS_CHECK(ek_os_workq_cancel(&delayed_dw.work) == 0 && ek_os_work_state(&delayed_dw.work) == 0,
+                 "cancel removes delayed work cleanly");
+
+        // 对运行中工作项的非阻塞取消、timeout==0 与有限超时校验
+        OS_CHECK(ek_os_workq_cancel(&bctx.work) == -EBUSY, "cancel on running work returns -EBUSY");
+        OS_CHECK(ek_os_workq_cancel_sync(&bctx.work, 0) == -EAGAIN,
+                 "cancel_sync(0) on running work returns -EAGAIN");
+        OS_CHECK(ek_os_work_state(&bctx.work) == EK_OS_WORK_RUNNING,
+                 "cancel_sync(0) does not leak CANCELING bit");
+        OS_CHECK(ek_os_workq_cancel_sync(&bctx.work, EK_OS_MSEC(5)) == -ETIMEDOUT,
+                 "timed cancel_sync on running work returns -ETIMEDOUT");
+        OS_CHECK(ek_os_work_state(&bctx.work) == EK_OS_WORK_RUNNING,
+                 "timed cancel_sync clears CANCELING bit on timeout");
+
+        // flush 非阻塞探测与超时安全撤销栈上哨兵
+        OS_CHECK(ek_os_workq_flush(wq, 0) == -EAGAIN, "flush(0) while busy returns -EAGAIN");
+        OS_CHECK(ek_os_workq_flush(wq, EK_OS_MSEC(5)) == -ETIMEDOUT, "flush timeout returns -ETIMEDOUT safely");
+
+        // 启动高优先级线程执行阻塞 cancel_sync，并验证 CANCELING 期间禁止重提交
+        s_wq_cancel_target = &bctx.work;
+        s_wq_cancel_sync_ret = -1;
+        int cancel_tid = ek_os_thread_create("wq_canceler", _wq_canceller_thread, NULL, PRIO_HIGH, TEST_STACK);
+        ek_os_thread_sleep(5000);
+
+        OS_CHECK((ek_os_work_state(&bctx.work) & (EK_OS_WORK_RUNNING | EK_OS_WORK_CANCELING)) ==
+                     (EK_OS_WORK_RUNNING | EK_OS_WORK_CANCELING),
+                 "work state shows RUNNING | CANCELING while cancel_sync waits");
+        OS_CHECK(ek_os_workq_submit(wq, &bctx.work) == -EBUSY, "submit blocked by EK_OS_WORK_CANCELING");
+        OS_CHECK(ek_os_workq_cancel_sync(&bctx.work, 0) == -EBUSY, "concurrent cancel_sync returns -EBUSY");
+
+        // 放行 blocker，等待工作线程完成且 canceller 唤醒
+        ek_os_sem_give(gate_sem);
+        OS_CHECK(ek_os_thread_join(cancel_tid, EK_OS_FOREVER, NULL) == 0, "join canceller thread");
+        OS_CHECK(s_wq_cancel_sync_ret == 0, "cancel_sync returns 0 after running work finishes");
+        OS_CHECK(bctx.resubmit_err == -EBUSY, "callback self-resubmit during CANCELING rejected with -EBUSY");
+        OS_CHECK(ek_os_work_state(&bctx.work) == 0, "work state returns 0 after cancel_sync");
+        OS_CHECK(!s_wq_cancelled_ran, "cancelled pending/delayed works never ran");
+        OS_CHECK(ek_os_workq_flush(wq, 0) == 0, "queue is empty after blocker finishes");
+    }
+    if (started_sem) ek_os_sem_destroy(started_sem);
+    if (gate_sem) ek_os_sem_destroy(gate_sem);
+
+    /* 自身工作线程内调用 flush / cancel_sync 返回 -EDEADLK */
+    ek_os_work_t self_w;
+    s_wq_self_checked = false;
+    s_wq_self_flush_err = 0;
+    s_wq_self_cancel_err = 0;
+    s_wq_self_q = wq;
+    ek_os_work_init(&self_w, _wq_self_check_cb);
+    OS_CHECK(ek_os_workq_submit(wq, &self_w) == 0, "submit self-check work");
+    OS_CHECK(ek_os_workq_flush(wq, EK_OS_FOREVER) == 0 && s_wq_self_checked, "wait self-check work");
+    OS_CHECK(s_wq_self_flush_err == -EDEADLK, "flush from own worker thread returns -EDEADLK");
+    OS_CHECK(s_wq_self_cancel_err == -EDEADLK, "cancel_sync from own worker thread returns -EDEADLK");
+
+    ek_os_workq_destroy(wq);
+    wq = NULL;
+
+    /* 6. 静态工作队列创建校验、destroy 清理延时链表与销毁后拒绝访问 */
+    OS_CHECK(ek_os_workq_create_static(NULL, sizeof(s_static_wq_mem.buf), "st", PRIO_MID) == NULL,
+             "workq_create_static(NULL) returns NULL");
+    OS_CHECK(ek_os_workq_create_static(
+                 s_static_wq_mem.buf, EK_OS_WORKQ_STATIC_BUF_SIZE(EKCFG_OS_THREAD_MIN_STACK) - 1U, "st", PRIO_MID) ==
+                 NULL,
+             "workq_create_static undersized returns NULL");
+
+    union
+    {
+        ek_os_workq_t workq;
+        uint64_t align;
+        uint8_t buf[EK_OS_WORKQ_STATIC_BUF_SIZE(TEST_STACK) + 8U];
+    } unaligned_wq_mem;
+    OS_CHECK(ek_os_workq_create_static(
+                 unaligned_wq_mem.buf + 1U, sizeof(unaligned_wq_mem.buf) - 1U, "st", PRIO_MID) == NULL,
+             "workq_create_static unaligned returns NULL");
+
+    ek_os_workq_t *st_wq = ek_os_workq_create_static(s_static_wq_mem.buf, sizeof(s_static_wq_mem.buf), "wq_st", PRIO_MID);
+    OS_CHECK(st_wq != NULL, "workq_create_static");
+    if (st_wq)
+    {
+        ek_os_work_t run_w;
+        ek_os_work_delay_t pend_dw;
+        s_wq_cancelled_ran = false;
+        ek_os_work_init(&run_w, _wq_short_sleep_cb);
+        ek_os_work_delay_init(&pend_dw, _wq_cancelled_cb);
+
+        OS_CHECK(ek_os_workq_submit(st_wq, &run_w) == 0, "submit work to static workq");
+        OS_CHECK(ek_os_workq_schedule(st_wq, &pend_dw, EK_OS_MSEC(500)) == 0,
+                 "schedule delayed work cleared on destroy");
+        ek_os_thread_sleep(3000);
+
+        ek_os_workq_destroy(st_wq);
+        OS_CHECK(ek_os_work_state(&pend_dw.work) == 0, "destroy clears pending delayed work state");
+        OS_CHECK(!s_wq_cancelled_ran, "destroyed workq never runs uncleared future delayed work");
+        OS_CHECK(ek_os_workq_submit(st_wq, &run_w) == -ENOENT, "destroyed static workq rejects submit");
+        OS_CHECK(ek_os_workq_schedule(st_wq, &pend_dw, 10) == -ENOENT, "destroyed static workq rejects schedule");
+        OS_CHECK(ek_os_workq_reschedule(st_wq, &pend_dw, 10) == -ENOENT, "destroyed static workq rejects reschedule");
+        OS_CHECK(ek_os_workq_flush(st_wq, 0) == -ENOENT, "destroyed static workq rejects flush");
+    }
+
+#    if EKCFG_STATIC_ALLOC == 1
+    /* 7. EK_DEFINE_OS_WORKQ 自动注册验证（不销毁以支持重复运行） */
+    OS_CHECK(s_def_workq != NULL, "EK_DEFINE_OS_WORKQ initialized");
+    if (s_def_workq)
+    {
+        wq_seq_item_t def_item = { .id = 99 };
+        s_wq_seq_idx = 0;
+        ek_os_work_init(&def_item.work, _wq_seq_cb);
+        OS_CHECK(ek_os_workq_submit(s_def_workq, &def_item.work) == 0, "submit to EK_DEFINE_OS_WORKQ");
+        OS_CHECK(ek_os_workq_flush(s_def_workq, EK_OS_FOREVER) == 0 && s_wq_seq_idx == 1 && s_wq_seq[0] == 99,
+                 "EK_DEFINE_OS_WORKQ executes submitted work");
+    }
+#    endif
+
+#    if EKCFG_OS_ISR_WORKQ == 1
+    /* 8. 内核内置 ISR 工作队列与 EK_DEFINE_OS_WORKQ_ISR 软中断触发验证 */
+    ek_os_workq_t *isr_wq = ek_os_workq_isr();
+    OS_CHECK(isr_wq != NULL, "ek_os_workq_isr() returns valid handle");
+    if (isr_wq)
+    {
+        wq_seq_item_t isr_direct = { .id = 77 };
+        s_wq_seq_idx = 0;
+        ek_os_work_init(&isr_direct.work, _wq_seq_cb);
+        OS_CHECK(ek_os_workq_submit(isr_wq, &isr_direct.work) == 0, "submit direct work to isr workq");
+        OS_CHECK(ek_os_workq_flush(isr_wq, EK_OS_FOREVER) == 0 && s_wq_seq_idx == 1 && s_wq_seq[0] == 77,
+                 "isr workq executes direct work");
+
+        s_wq_isr_sem = ek_os_sem_create(0);
+        OS_CHECK(s_wq_isr_sem != NULL, "create sem for EK_DEFINE_OS_WORKQ_ISR test");
+        if (s_wq_isr_sem)
+        {
+            s_wq_isr_top_cnt = 0;
+            s_wq_isr_bottom_cnt = 0;
+            s_wq_isr_in_thread = false;
+            s_wq_isr_bottom_tid = -1;
+
+            nvic_irq_enable(WQ_SW_IRQn, 0, 2);
+
+            // 上半部返回 false 时仅清标志不投递下半部
+            s_wq_isr_emit = false;
+            NVIC_SetPendingIRQ(WQ_SW_IRQn);
+            ek_arch_dsb();
+            ek_arch_isb();
+            OS_CHECK(ek_os_workq_flush(isr_wq, EK_OS_FOREVER) == 0, "flush isr workq after false top_fn");
+            OS_CHECK(s_wq_isr_top_cnt == 1 && s_wq_isr_bottom_cnt == 0,
+                     "EK_DEFINE_OS_WORKQ_ISR skips bottom_fn when top_fn returns false");
+
+            // 上半部返回 true 时投递下半部到 isr workq 线程执行
+            s_wq_isr_emit = true;
+            NVIC_SetPendingIRQ(WQ_SW_IRQn);
+            ek_arch_dsb();
+            ek_arch_isb();
+            OS_CHECK(ek_os_sem_take(s_wq_isr_sem, EK_OS_MSEC(100)) == 0, "EK_DEFINE_OS_WORKQ_ISR wakes bottom_fn");
+            OS_CHECK(s_wq_isr_top_cnt == 2 && s_wq_isr_bottom_cnt == 1 && s_wq_isr_in_thread &&
+                         s_wq_isr_bottom_tid > 0 && s_wq_isr_bottom_tid != ek_os_kernel_current_tid(),
+                     "EK_DEFINE_OS_WORKQ_ISR runs bottom_fn in isr workq thread context");
+
+            nvic_irq_disable(WQ_SW_IRQn);
+            ek_os_sem_destroy(s_wq_isr_sem);
+            s_wq_isr_sem = NULL;
+        }
+    }
+#    endif
+
+    EK_LOG_INFO("workq_test finished: %s", s_done ? "FAILED" : "ALL PASS");
+}
+
+static void *_workq_main(void *arg)
+{
+    (void)arg;
+    _workq_test();
+    return NULL;
+}
+
+int workq_test_run(void)
+{
+    s_done = false;
+    int tid = ek_os_thread_create("wq_main", _workq_main, NULL, PRIO_TEST, 2048U);
+    if (tid < 0) return tid;
+
+    int err = ek_os_thread_join(tid, EK_OS_FOREVER, NULL);
+    if (err < 0) return err;
+
+    return s_done ? -1 : 0;
+}
+
 static void *_conformance_main(void *arg)
 {
     (void)arg;
@@ -1320,6 +1782,9 @@ static void *_test_main(void *arg)
     int kfifo_tid = ek_os_thread_create("kfifo_main", _kfifo_main, NULL, PRIO_TEST, 1536);
     OS_CHECK(ek_os_thread_join(kfifo_tid, -1, NULL) == 0, "join kfifo test thread");
 
+    int wq_tid = ek_os_thread_create("wq_main", _workq_main, NULL, PRIO_TEST, 2048);
+    OS_CHECK(ek_os_thread_join(wq_tid, -1, NULL) == 0, "join workq test thread");
+
     void *conf_ret = NULL;
     int conf_tid = ek_os_thread_create("conf_main", _conformance_main, NULL, PRIO_TEST, 2048);
     OS_CHECK(ek_os_thread_join(conf_tid, -1, &conf_ret) == 0 && (int)(intptr_t)conf_ret == 0,
@@ -1356,6 +1821,11 @@ void os_test(void)
 }
 
 int os_test_run(void)
+{
+    return 0;
+}
+
+int workq_test_run(void)
 {
     return 0;
 }

@@ -108,6 +108,15 @@ static int _cmd_test_os(int argc, char *argv[], void *sh)
 }
 EK_DEFINE_SHELL_CMD(test_os, _cmd_test_os);
 
+static int _cmd_test_workq(int argc, char *argv[], void *sh)
+{
+    __EK_UNUSED(argc);
+    __EK_UNUSED(argv);
+    __EK_UNUSED(sh);
+    return workq_test_run();
+}
+EK_DEFINE_SHELL_CMD(test_workq, _cmd_test_workq);
+
 static void *_conf_thread(void *arg)
 {
     __EK_UNUSED(arg);

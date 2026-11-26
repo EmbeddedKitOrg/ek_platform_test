@@ -52,6 +52,7 @@ void vfs_test(void);
 void shell_test(void);
 void os_test(void);
 int os_test_run(void);
+int workq_test_run(void);
 int os_conformance_test(void);
 void os_stackoverflow_test(void);
 int fpu_test(void);
